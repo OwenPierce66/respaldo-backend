@@ -1,25 +1,43 @@
-env
+# Entornos virtuales
+env/
+envv/
+envvv/
+venv/
+.venv/
 
-envv
+# Archivos de entorno y secretos
+.env
+*.env
+replacements.txt
 
-envvv
-__pycache__
-
-*.sqlite3
-db.sqlite3
-
+# Compilados de Python
 __pycache__/
+*.py[cod]
+*$py.class
 
-# editors
+# Base de datos local
+db.sqlite3
+*.sqlite3
+
+# Archivos de logs
+*.log
+debug.log
+
+# Archivos de configuración de editores
+.vscode/
+.idea/
+*.swp
 .vimrc.lua
 
-# Elastic Beanstalk Files
+# Archivos de Elastic Beanstalk
 .elasticbeanstalk/*
 !.elasticbeanstalk/*.cfg.yml
 !.elasticbeanstalk/*.global.yml
 aws-elastic-beanstalk-cli-setup
-<<<<<<< HEAD
+
+# Archivos estáticos y media generados
+/media/
+staticfiles/
 
 debug.log
-=======
->>>>>>> fd657a6f2529a2749c9d1d28c77d2eb0e0a67d6e
+fd657a6f2529a2749c9d1d28c77d2eb0e0a67d6e
