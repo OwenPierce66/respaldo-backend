@@ -1,0 +1,25 @@
+env
+
+envv
+
+envvv
+__pycache__
+
+*.sqlite3
+db.sqlite3
+
+__pycache__/
+
+# editors
+.vimrc.lua
+
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
+aws-elastic-beanstalk-cli-setup
+<<<<<<< HEAD
+
+debug.log
+=======
+>>>>>>> fd657a6f2529a2749c9d1d28c77d2eb0e0a67d6e
