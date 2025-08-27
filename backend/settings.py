@@ -1,19 +1,26 @@
-
+from decouple import config
+from dotenv import load_dotenv
+load_dotenv() 
 
 import os
+
+load_dotenv()
+
 from datetime import timedelta
 from django.conf import settings
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+SECRET_KEY = 'clave_temporal_para_desarrollo'
+STRIPE_KEY = 'clave_temporal_para_desarrollo'
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/3.0/howto/deployment/checklist/
-from decouple import config
+
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('DJANGO_SECRET_KEY')
-STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY')
+
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -162,8 +169,6 @@ else:
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = '/static/'
 
-from dotenv import load_dotenv
-load_dotenv()
 
 USE_S3 = os.environ.get("USE_S3") == "True"
 
@@ -178,7 +183,8 @@ else:
 
 EMAIL_HOST = 'smtp.sendgrid.net'
 EMAIL_HOST_USER = 'apikey'
-EMAIL_HOST_PASSWORD = config("SENDGRID_API_KEY")EMAIL_PORT = 587
+EMAIL_HOST_PASSWORD = config("SENDGRID_API_KEY")
+EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 

@@ -57,7 +57,7 @@ from django.db.models import Count
 from django.http import JsonResponse
 from decouple import config
 
-stripe.api_key = config('STRIPE_KEY')
+
 
 from .models import (
     Task, Like, Comment, Postt, ImagenFija, Portada, ForumPostt, LikeCommentPost, NewPeticionCommentPost, LikeP,NuevoTask, SharedTask, Favorito, pFavorito, Hashtag, CategoryP, NewCategory,  Imagen, TuModelo, Profile

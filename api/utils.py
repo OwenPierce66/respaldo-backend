@@ -18,7 +18,7 @@ from sendgrid.helpers.mail import Mail
 from decouple import config
 
 
-stripe.api_key = config('STRIPE_KEY')
+stripe.api_key = config('STRIPE_TEST_KEY')
 sendgrid_api_key = config('SENDGRID_KEY')
 
 def create_stripe_payment(amount):    
