@@ -15,12 +15,6 @@ SECRET_KEY = 'clave_temporal_para_desarrollo'
 STRIPE_KEY = 'clave_temporal_para_desarrollo'
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/3.0/howto/deployment/checklist/
-
-
-# SECURITY WARNING: keep the secret key used in production secret!
-
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
