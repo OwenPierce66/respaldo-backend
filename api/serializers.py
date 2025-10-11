@@ -187,7 +187,9 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
 
     def get_likes_count(self, obj):
         return obj.likes.count()
-        
+
+
+
 class TaskSerializer(serializers.ModelSerializer):
     like_set = LikeSerializer(many=True, read_only=True)
     likes_count = serializers.SerializerMethodField()
@@ -195,20 +197,77 @@ class TaskSerializer(serializers.ModelSerializer):
     subfuentes = SubFuentesSerializer(many=True, read_only=True)
     subfactores = SubFactoresSerializer(many=True, read_only=True)
     user_image = serializers.SerializerMethodField()
+    shared_by_list = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
         fields = '__all__'
 
     def get_likes_count(self, obj):
-        return obj.like_set.count()
+        return getattr(obj, 'likes_count', obj.like_set.count())
 
     def get_user_image(self, obj):
         imagen_fija = ImagenFija.objects.filter(user=obj.user).last()
-        
         if imagen_fija and imagen_fija.image:
             return imagen_fija.image.url
-        return "No image available" 
+        return None
+
+    def get_shared_by_list(self, obj):
+        shared_tasks = obj.shared_tasks.all()
+        return [
+            {
+                "id": st.shared_by.id,
+                "username": st.shared_by.username,
+                "email": st.shared_by.email,
+                "is_staff": st.shared_by.is_staff,
+                "description": st.description,  # 👈 aquí va la descripción
+            }
+            for st in shared_tasks
+        ]
+
+
+
+
+class SharedTaskSerializer(serializers.ModelSerializer):
+    task = TaskSerializer(read_only=True)
+    shared_by = serializers.SerializerMethodField()
+    user_has_liked = serializers.SerializerMethodField()
+    shared_by_username = serializers.CharField(source='shared_by.username', read_only=True)
+
+    class Meta:
+        model = SharedTask
+        fields = ['id', 'task', 'shared_by', 'shared_by_username', 'created_at', 'description', 'user_has_liked']
+
+
+    def get_user_has_liked(self, obj):
+        user = self.context['request'].user
+        return obj.task.like_set.filter(user=user).exists()
+
+
+    def get_shared_by(self, obj):
+        return {
+            'id': obj.shared_by.id,
+            'username': obj.shared_by.username,
+            'email': obj.shared_by.email,
+            'is_staff': obj.shared_by.is_staff
+        }
+
+
+class TaskFeedSerializer(serializers.ModelSerializer):
+    shared_tasks = SharedTaskSerializer(many=True, read_only=True)
+    shared_by_list = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Task
+        fields = (
+            'id', 'title', 'description', 'pch', 'username', 'categories',
+            'image', 'video', 'share_count', 'created_at',
+            'shared_tasks', 'shared_by_list'
+        )
+
+    def get_shared_by_list(self, obj):
+        # Solo lista de usuarios que compartieron esta tarea
+        return [share.shared_by.username if share.shared_by else 'unknown' for share in obj.shared_tasks.all()]
 
 
 class ImageSerializer(serializers.ModelSerializer):
@@ -253,28 +312,6 @@ class pFavoritoSerializer(serializers.ModelSerializer):
         fields = '__all__'
         extra_kwargs = {'user': {'read_only': True}}
 
-class SharedTaskSerializer(serializers.ModelSerializer):
-    task = TaskSerializer(read_only=True)
-    shared_by = serializers.SerializerMethodField()
-    user_has_liked = serializers.SerializerMethodField()
-
-    class Meta:
-        model = SharedTask
-        fields = ['id', 'task', 'shared_by', 'created_at', 'user_has_liked']
-
-    def get_shared_by(self, obj):
-        return {
-            'id': obj.shared_by.id,
-            'username': obj.shared_by.username,
-            'email': obj.shared_by.email,
-            'is_staff': obj.shared_by.is_staff
-        }
-
-    def get_user_has_liked(self, obj):
-        user = self.context['request'].user
-        return obj.task.like_set.filter(user=user).exists()
-
-
 class PosttSerializer(serializers.ModelSerializer):
     replies = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
 
@@ -284,9 +321,19 @@ class PosttSerializer(serializers.ModelSerializer):
         
 
 class SharedTaskCreateSerializer(serializers.ModelSerializer):
+    task = serializers.PrimaryKeyRelatedField(queryset=Task.objects.all())
+    description = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = SharedTask
-        fields = ['id', 'task', 'shared_by']
+        fields = ['id', 'task', 'shared_by', 'description', 'created_at']
+        read_only_fields = ['id', 'shared_by', 'created_at']
+
+    def create(self, validated_data):
+        # Asegura que shared_by siempre venga del context (request.user)
+        user = self.context['request'].user
+        validated_data['shared_by'] = user
+        return super().create(validated_data)
 
 
 class UserProfileSerializer(serializers.ModelSerializer):

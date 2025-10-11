@@ -88,7 +88,7 @@ class Task(models.Model):
     image = models.ImageField(storage=ImagenText(), null=True, blank=True)
     video = models.FileField(storage=VideoStorage(), null=True, blank=True)
     share_count = models.PositiveIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True) 
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True, db_index=True)
 
 class NewPeticionCommentPost(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='task_comments')
@@ -241,15 +241,15 @@ class Imagen(models.Model):
     image = models.ImageField(storage=ImagenText())
 
 class SharedTask(models.Model):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE)
-    shared_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name='shared_tasks')
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='shared_tasks')
+    shared_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name='shared_tasks_by_user')
+    description = models.TextField(blank=True, default="")  # descripción propia del compartidor
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f'{self.task.title} shared by {self.shared_by.username}'
+        return f'{self.task.title} shared by {self.shared_by.username if self.shared_by else "unknown"}'
 
-
-
+# separacion
     
 class ForumPostt(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.CASCADE)

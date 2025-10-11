@@ -11,6 +11,7 @@ urlpatterns = [
     path('user-list/', UserListView.as_view()),
     path('get-user/', GetUserView, name='get_user'),
 
+    path('feed/', task_feed, name='task-feed'),
     path('tu-modelo/', TuModeloListCreateView, name='TuModeloListCreateView'),
     path('tu-modelo/<int:pk>/', TuModeloRetrieveUpdateDestroyView, name='TuModeloRetrieveUpdateDestroyView'),
     # path('comments/', add_comment, name="add_comment"),
@@ -49,7 +50,7 @@ urlpatterns = [
     path('shared-tasks/<int:shared_task_id>/', delete_shared_task, name='delete_shared_task'),
     path('postss/', post_list_create, name='post-list-create'),
     path('comments/<int:comment_id>/users_who_liked/', users_who_liked_comment, name='users_who_liked_comment'),
-    path('profile/', get_user_profile, name='get_user_profile'),
+    # path('profile/', get_user_profile, name='get_user_profile'),
     path('profile/', get_current_user_profile, name='get_current_user_profile'),
     path('portada/', portada_list_create, name='portada-list-create'),
     path('portada/<int:portada_id>/', portada_update_delete, name='portada-update-delete'),

@@ -8,7 +8,7 @@ from rest_framework import status
 from datetime import datetime
 from datetime import timedelta
 from django.core.files.base import ContentFile
-from django.db.models import Q
+from django.db.models import Q,  Prefetch
 from django.conf import settings
 import uuid
 import json
@@ -64,7 +64,7 @@ from .models import (
     )   
 
 from .serializers import (
-    ImagenSerializer, LikeSerializer, SubFuentesPCHPostSerializer, SubFactoresPCHPostSerializer, ImagenFijaSerializer, PortadaSerializer, UserDetailsSerializer, SubFuentesSerializer, SubFactoresSerializer, SubTaskCommentPostSerializer, SubFuentesCommentPostSerializer, SubFactoresCommentPostSerializer, CreateNewPeticionCommentSerializer, NewPeticionCommentSerializer, PosttSerializer, SharedTaskCreateSerializer, SharedTaskSerializer, FavoritoReadSerializer, FavoritoSerializer, pFavoritoSerializer, CustomUserDetailsSerializer, NewCategorySerializer, CategoryPSerializer, SimpleUserSerializer, LikeCommentSerializer, TaskSerializer, NuevoTaskSerializer, TuModeloSerializer, SubTaskSerializer,
+    ImagenSerializer, LikeSerializer, SubFuentesPCHPostSerializer, TaskFeedSerializer, SubFactoresPCHPostSerializer, ImagenFijaSerializer, PortadaSerializer, UserDetailsSerializer, SubFuentesSerializer, SubFactoresSerializer, SubTaskCommentPostSerializer, SubFuentesCommentPostSerializer, SubFactoresCommentPostSerializer, CreateNewPeticionCommentSerializer, NewPeticionCommentSerializer, PosttSerializer, SharedTaskCreateSerializer, SharedTaskSerializer, FavoritoReadSerializer, FavoritoSerializer, pFavoritoSerializer, CustomUserDetailsSerializer, NewCategorySerializer, CategoryPSerializer, SimpleUserSerializer, LikeCommentSerializer, TaskSerializer, NuevoTaskSerializer, TuModeloSerializer, SubTaskSerializer,
     )
 
 from rest_framework import generics, permissions
@@ -74,9 +74,35 @@ from rest_framework import viewsets
 from rest_framework import generics, permissions
 from .models import ForumPostt
 
-
-
+from rest_framework.pagination import CursorPagination
+from rest_framework.pagination import LimitOffsetPagination
 # Vista para listar y crear portadas
+# views.py
+class TaskFeedLimitOffset(LimitOffsetPagination):
+    default_limit = 3   # lo que usas en el front
+    max_limit = 100
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def task_feed(request):
+    qs = (
+        Task.objects
+        .select_related('user')
+        .prefetch_related(
+            Prefetch('subtasks'),
+            Prefetch('subfactores'),
+            Prefetch('subfuentes'),
+            Prefetch('shared_tasks', queryset=SharedTask.objects.select_related('shared_by')),
+            Prefetch('like_set'),
+        )
+        .order_by('-created_at', '-id')  # orden estable
+    )
+
+    paginator = TaskFeedLimitOffset()
+    page = paginator.paginate_queryset(qs, request)
+    serializer = TaskSerializer(page, many=True, context={'request': request})
+    return paginator.get_paginated_response(serializer.data)
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -109,7 +135,7 @@ def portada_list_create(request):
 def get_task_with_images(request, task_id):
     task = get_object_or_404(Task, id=task_id)
     
-    serializer = TaskSerializer(task)
+    serializer = TaskSerializer(task, many=True)
     
     return Response(serializer.data)
 
@@ -238,6 +264,7 @@ def create_shared_task(request):
     if request.method == 'POST':
         data = request.data.copy()
         task_id = data.get('task_id')
+        description = data.get('description', '')  # descripción al compartir
 
         if not task_id:
             return Response({"error": "Task ID is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -248,22 +275,22 @@ def create_shared_task(request):
             return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
 
         shared_by = request.user
-        data['task'] = task.id
-        data['shared_by'] = shared_by.pk
+        shared_task = SharedTask.objects.create(
+            task=task,
+            shared_by=shared_by,
+            description=description
+        )
+        task.share_count += 1
+        task.save()
 
-        serializer = SharedTaskCreateSerializer(data=data, context={'request': request})
-
-        if serializer.is_valid():
-            serializer.save(shared_by=shared_by, task=task)
-            task.share_count += 1
-            task.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer = SharedTaskSerializer(shared_task, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     elif request.method == 'GET':
         shared_tasks = SharedTask.objects.all()
         serializer = SharedTaskSerializer(shared_tasks, many=True, context={'request': request})
         return Response(serializer.data)
+
 
 
 
@@ -574,7 +601,7 @@ def users_who_liked_task_comment(request, task_id):
 def tasks_by_id(request, task_id):
     if request.method == 'GET':
         tasks = Task.objects.filter(id=task_id).prefetch_related('like_set')
-        serializer = TaskSerializer(tasks, many=True)
+        serializer = TaskSerializer(task, many=True)
         return Response(serializer.data)
    
 class NewPeticionCommentView(APIView):
@@ -757,10 +784,14 @@ def comment_detail(request, comment_id):
 @permission_classes([AllowAny])
 @parser_classes([JSONParser,MultiPartParser, FormParser])
 def task_detaill(request, task_id):
+    try:
+        task = Task.objects.get(pk=task_id)
+    except Task.DoesNotExist:
+        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
         tasks = Task.objects.filter(user=request.user.id).prefetch_related('like_set')
-        serializer = TaskSerializer(tasks, many=True)
+        serializer = TaskSerializer(task, context={'request': request})
 
         return Response(serializer.data)
 
@@ -876,7 +907,7 @@ def task_detaill(request, task_id):
 def get_task_by_id(request, task_id):
     try:
         task = Task.objects.get(id=task_id)  
-        serializer = TaskSerializer(task)  
+        serializer = TaskSerializer(task, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
     except Task.DoesNotExist:
         return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -890,7 +921,7 @@ def nuevo_task_detaill(request, task_id):
         except Task.DoesNotExist:
             return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = TaskSerializer(task) 
+        serializer = TaskSerializer(task, context={'request': request})
         return Response(serializer.data)
 
     elif request.method == 'POST':
