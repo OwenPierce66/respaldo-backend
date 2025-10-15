@@ -18,8 +18,11 @@ from sendgrid.helpers.mail import Mail
 from decouple import config
 
 
-stripe.api_key = config('STRIPE_TEST_KEY')
-sendgrid_api_key = config('SENDGRID_KEY')
+# stripe.api_key = config('STRIPE_TEST_KEY')
+# sendgrid_api_key = config('SENDGRID_KEY')
+
+stripe.api_key = 'sepa que pedo con la clave'
+sendgrid_api_key = 'sepa que pedo con la clave'
 
 def create_stripe_payment(amount):    
     intent = stripe.PaymentIntent.create(
