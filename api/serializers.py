@@ -6,6 +6,7 @@ from .choices.listings import *
 from rest_framework import generics
 from django.db import transaction
 import json
+from urllib.parse import urljoin
 
 class CustomUserDetailsSerializer(serializers.ModelSerializer):
     class Meta:
@@ -54,25 +55,63 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         return False  
 
         
+
+
 class UserSerializer(serializers.ModelSerializer):
+    avatar_url = serializers.SerializerMethodField()
+    liked = serializers.SerializerMethodField()
+    shared = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id','username', 'first_name', 'last_name', 'email', 'profile', 'date_joined')
+        fields = ("id", "username", "first_name", "last_name", "avatar_url", "liked", "shared")
 
-    def update(self, instance, validated_data):
-        instance.id = validated_data.get('id', instance.id)
-        instance.username = validated_data.get('username', instance.username)
-        instance.first_name = validated_data.get('first_name', instance.first_name)
-        instance.last_name = validated_data.get('last_name', instance.last_name)
-        instance.email = validated_data.get('email', instance.email)
+    def get_avatar_url(self, obj):
+        request = self.context.get("request")
+        name = getattr(obj, "latest_imagenfija_image", None)  # viene de tu Subquery
 
-        profile = validated_data.get('profile')
-        instance.profile.role = profile.get('role')
-        instance.profile.status = profile.get('status')
-        
-        instance.save()
-        return instance
+        if not name:
+            return None
+
+        # 1) Si es un ImageFieldFile / File, usa su .url
+        if hasattr(name, "url"):
+            url = name.url
+        else:
+            # 2) Es un string (puede ser 'imagenfija/yo.jpg', '/media/imagenfija/yo.jpg' o ya http(s))
+            url = str(name).strip()
+            if not url:
+                return None
+
+            # 2.a) Si YA es http(s), úsala tal cual
+            if url.startswith(("http://", "https://")):
+                return url
+
+            # 2.b) Si ya empieza por MEDIA_URL o por '/media/', déjala así (normaliza a absoluto si hace falta)
+            media_url = (getattr(settings, "MEDIA_URL", "/media/") or "/media/").rstrip("/")
+            if url.startswith(media_url + "/") or url.startswith("/media/"):
+                # ok
+                pass
+            else:
+                # 2.c) Es una ruta de storage como 'imagenfija/yo.jpg' -> conviértela a '/media/...'
+                try:
+                    url = default_storage.url(url.lstrip("/"))
+                except Exception:
+                    # fallback por si el storage no resolvió
+                    url = f"{media_url}/{url.lstrip('/')}"
+
+        # 3) Asegura absoluta con host cuando no es http(s)
+        if request and url and not url.startswith(("http://", "https://")):
+            if not url.startswith("/"):
+                url = "/" + url  # <- evita el bug de concatenarse al path del endpoint actual
+            return request.build_absolute_uri(url)
+
+        return url
+
+    def get_liked(self, obj):
+        return bool(getattr(obj, "liked", False))
+
+    def get_shared(self, obj):
+        return bool(getattr(obj, "shared", False))
     
 
 class TuModeloSerializer(serializers.ModelSerializer):

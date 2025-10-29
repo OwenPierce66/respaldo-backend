@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.generics import ListAPIView, get_object_or_404
 from rest_framework.decorators import api_view, permission_classes, parser_classes
+from django.db.models import OuterRef, Subquery, Exists
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.pagination import PageNumberPagination
@@ -102,6 +103,7 @@ def task_feed(request):
     page = paginator.paginate_queryset(qs, request)
     serializer = TaskSerializer(page, many=True, context={'request': request})
     return paginator.get_paginated_response(serializer.data)
+
 
 
 @api_view(['GET'])
@@ -568,19 +570,75 @@ def add_imagen(request):
         return Response(serializer.errors, status=400)
 
 
-@api_view(['GET'])
-@permission_classes([AllowAny])  
+
+
+def _imagenfija_reverse_name():
+    # por si lo necesitas en otro lado
+    return ImagenFija._meta.get_field('user').remote_field.get_accessor_name()
+
+# ---------- QUIENES DIERON LIKE ----------
+@api_view(["GET"])
+@permission_classes([AllowAny])
 def users_who_liked_task(request, task_id):
     try:
-        task = Task.objects.prefetch_related('like_set').get(id=task_id)
-
-        users = [like.user for like in task.like_set.all()]
-
-        user_serializer = UserSerializer(users, many=True)
-
-        return Response(user_serializer.data, status=status.HTTP_200_OK)
+        Task.objects.only("id").get(id=task_id)
     except Task.DoesNotExist:
-        return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    latest_img = (
+        ImagenFija.objects
+        .filter(user=OuterRef("pk"))
+        .order_by("-id")        # o "-created_at" si existe
+        .values("image")[:1]
+    )
+
+    likes_exists = Like.objects.filter(task_id=task_id, user_id=OuterRef("pk"))
+
+    users_qs = (
+        User.objects
+        .annotate(
+            latest_imagenfija_image=Subquery(latest_img),
+            liked=Exists(likes_exists),
+        )
+        .filter(liked=True)
+        .only("id", "username", "first_name", "last_name")
+    )
+
+    ser = UserSerializer(users_qs, many=True, context={"request": request})
+    return Response(ser.data, status=status.HTTP_200_OK)
+
+# ---------- QUIENES COMPARTIERON ----------
+@api_view(["GET"])
+@permission_classes([AllowAny])  # o IsAuthenticated
+def users_who_shared_task(request, task_id):
+    try:
+        Task.objects.only("id").get(id=task_id)
+    except Task.DoesNotExist:
+        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    latest_img = (
+        ImagenFija.objects
+        .filter(user=OuterRef("pk"))
+        .order_by("-id")
+        .values("image")[:1]
+    )
+
+    # Ajusta el campo del usuario en SharedTask si en tu modelo se llama distinto
+    shares_exists = SharedTask.objects.filter(task_id=task_id, shared_by_id=OuterRef("pk"))
+
+    users_qs = (
+        User.objects
+        .annotate(
+            latest_imagenfija_image=Subquery(latest_img),
+            shared=Exists(shares_exists),
+        )
+        .filter(shared=True)
+        .only("id", "username", "first_name", "last_name")
+    )
+
+    ser = UserSerializer(users_qs, many=True, context={"request": request})
+    return Response(ser.data, status=status.HTTP_200_OK)
+
     
 @api_view(['GET'])
 @permission_classes([AllowAny])  
@@ -902,6 +960,138 @@ def task_detaill(request, task_id):
         return Response(status=204)
 
 
+
+@api_view(['GET', 'PUT', 'DELETE', 'POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
+def task_detail(request, task_id):
+    # --- CREAR (POST) ---
+    if request.method == 'POST':
+        print("Received data:", request.data)
+        print("Received files:", request.FILES)
+
+        task_data = {
+            'title': request.data.get('title'),
+            'description': request.data.get('description'),
+            'username': request.data.get('username'),
+            'pch': request.data.get('pch'),
+            'categories': request.data.get('categories'),
+            'user': request.user.id,                         # requiere user autenticado
+            'image': request.FILES.get('image'),
+            'video': request.FILES.get('video'),
+        }
+        task_serializer = TaskSerializer(data=task_data)
+        if task_serializer.is_valid():
+            task = task_serializer.save()
+
+            # subtasks
+            index = 0
+            while f'subtasks[{index}][title]' in request.data:
+                subtask_data = {
+                    'title': request.data.get(f'subtasks[{index}][title]'),
+                    'description': request.data.get(f'subtasks[{index}][description]'),
+                    'parent_task': task.id,
+                    'image': request.FILES.get(f'subtasks[{index}][image]'),
+                    'video': request.FILES.get(f'subtasks[{index}][video]'),
+                    'link': request.data.get(f'subtasks[{index}][link]'),
+                }
+                subtask_serializer = SubTaskSerializer(data=subtask_data)
+                if subtask_serializer.is_valid():
+                    subtask_serializer.save()
+                else:
+                    return Response(subtask_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                index += 1
+
+            # subfuentes
+            index = 0
+            while f'subfuentes[{index}][title]' in request.data:
+                subfuentes_data = {
+                    'title': request.data.get(f'subfuentes[{index}][title]'),
+                    'description': request.data.get(f'subfuentes[{index}][description]'),
+                    'parent_task': task.id,
+                    'image': request.FILES.get(f'subfuentes[{index}][image]'),
+                    'video': request.FILES.get(f'subfuentes[{index}][video]'),
+                    'link': request.data.get(f'subfuentes[{index}][link]'),
+                }
+                subfuentes_serializer = SubFuentesSerializer(data=subfuentes_data)
+                if subfuentes_serializer.is_valid():
+                    subfuentes_serializer.save()
+                else:
+                    return Response(subfuentes_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                index += 1
+
+            # subfactores
+            index = 0
+            while f'subfactores[{index}][title]' in request.data:
+                subfactores_data = {
+                    'title': request.data.get(f'subfactores[{index}][title]'),
+                    'description': request.data.get(f'subfactores[{index}][description]'),
+                    'parent_task': task.id,
+                    'image': request.FILES.get(f'subfactores[{index}][image]'),
+                    'video': request.FILES.get(f'subfactores[{index}][video]'),
+                    'link': request.data.get(f'subfactores[{index}][link]'),
+                }
+                subfactores_serializer = SubFactoresSerializer(data=subfactores_data)
+                if subfactores_serializer.is_valid():
+                    subfactores_serializer.save()
+                else:
+                    return Response(subfactores_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                index += 1
+
+            return Response(task_serializer.data, status=status.HTTP_201_CREATED)
+        else:
+            return Response(task_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # --- A PARTIR DE AQUÍ: métodos que sí necesitan la tarea existente ---
+    try:
+        task = Task.objects.get(pk=task_id)
+    except Task.DoesNotExist:
+        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'PUT':
+        like = task.like_set.filter(user=request.user).first()
+        if like:
+            like.delete()
+            return Response({"status": "unliked", "likes_count": task.like_set.count()}, status=status.HTTP_200_OK)
+        else:
+            serializer = LikeSerializer(data={'task': task_id})
+            if serializer.is_valid():
+                serializer.save(user=request.user)
+                return Response({"status": "liked", "likes_count": task.like_set.count()}, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'GET':
+        serializer = TaskSerializer(task, context={'request': request})
+        return Response(serializer.data)
+
+    elif request.method == 'DELETE':
+        if task.user_id != request.user.id:
+            return Response({"error": "You are not authorized to delete this task."}, status=status.HTTP_403_FORBIDDEN)
+        task.delete()
+        return Response(status=204)
+    # ... (lo demás igual)
+
+
+
+@api_view(['GET', 'POST', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def task_likes(request, task_id):
+    task = get_object_or_404(Task, pk=task_id)
+
+    if request.method == 'GET':
+        qs = task.like_set.select_related('user')
+        data = [{'id': l.user.id, 'username': l.user.username} for l in qs]
+        return Response(data)
+
+    if request.method == 'POST':
+        LikeModel.objects.get_or_create(task=task, user=request.user)
+        return Response({'likes_count': task.like_set.count()}, status=status.HTTP_201_CREATED)
+
+    if request.method == 'DELETE':
+        task.like_set.filter(user=request.user).delete()
+        return Response({'likes_count': task.like_set.count()}, status=status.HTTP_200_OK)
+
+    
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_task_by_id(request, task_id):
@@ -966,24 +1156,24 @@ def nuevo_task_detail(request):
         return Response(serializer.data)
     return JsonResponse({'status': 'received'})
 
-@api_view(['GET', 'PUT', 'DELETE', 'POST'])
-@permission_classes([AllowAny])
-def task_detail(request):
-    if request.method == 'GET':
+# @api_view(['GET', 'PUT', 'DELETE', 'POST'])
+# @permission_classes([AllowAny])
+# def task_detail(request):
+#     if request.method == 'GET':
         
-        tasks = Task.objects.all()
-        serializer = TaskSerializer(tasks, many=True)
-        return Response(serializer.data)
+#         tasks = Task.objects.all()
+#         serializer = TaskSerializer(tasks, many=True)
+#         return Response(serializer.data)
 
-    elif request.method == 'POST':
-        print(request.data)
-        serializer = TaskSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=201)
-        else:
-            print(serializer.errors)
-            return Response(serializer.errors, status=400)
+#     elif request.method == 'POST':
+#         print(request.data)
+#         serializer = TaskSerializer(data=request.data)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data, status=201)
+#         else:
+#             print(serializer.errors)
+#             return Response(serializer.errors, status=400)
     
 @api_view(['POST'])
 def test_view(request):
