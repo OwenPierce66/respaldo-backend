@@ -58,6 +58,7 @@ from django.db.models import Count
 from django.http import JsonResponse
 from decouple import config
 
+from django.utils.timezone import now
 
 
 from .models import (
@@ -83,11 +84,28 @@ class TaskFeedLimitOffset(LimitOffsetPagination):
     default_limit = 3   # lo que usas en el front
     max_limit = 100
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def task_feed(request):
+    """
+    Feed paginado con:
+      - ?ordering= -created_at | created_at | -likes_count | likes_count
+      - ?period= day | week | month  (opcional)
+    """
+
+    # --- 1) Leer parámetros del front ---
+    ordering = request.query_params.get('ordering') or '-created_at'
+    allowed_orderings = {'-created_at', 'created_at', '-likes_count', 'likes_count'}
+    if ordering not in allowed_orderings:
+        ordering = '-created_at'  # fallback seguro
+
+    period = request.query_params.get('period')  # day | week | month | None
+
+    # --- 2) Base queryset con annotate(likes_count) ---
     qs = (
         Task.objects
+        .annotate(likes_count=Count('like_set', distinct=True))
         .select_related('user')
         .prefetch_related(
             Prefetch('subtasks'),
@@ -96,9 +114,23 @@ def task_feed(request):
             Prefetch('shared_tasks', queryset=SharedTask.objects.select_related('shared_by')),
             Prefetch('like_set'),
         )
-        .order_by('-created_at', '-id')  # orden estable
     )
 
+    # --- 3) Filtro por periodo (top del día / semana / mes) ---
+    if period:
+        today = now().date()
+        if period == 'day':
+            qs = qs.filter(created_at__date=today)
+        elif period == 'week':
+            qs = qs.filter(created_at__date__gte=today - timedelta(days=7))
+        elif period == 'month':
+            qs = qs.filter(created_at__date__gte=today - timedelta(days=30))
+        # si viene algo raro, no se filtra por fecha
+
+    # --- 4) Orden global (estable) ---
+    qs = qs.order_by(ordering, '-id')  # -id como desempate
+
+    # --- 5) Paginación limit/offset como ya tenías ---
     paginator = TaskFeedLimitOffset()
     page = paginator.paginate_queryset(qs, request)
     serializer = TaskSerializer(page, many=True, context={'request': request})
@@ -1102,59 +1134,59 @@ def get_task_by_id(request, task_id):
     except Task.DoesNotExist:
         return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
     
-@api_view(['GET', 'PUT', 'DELETE', 'POST'])
-@permission_classes([AllowAny])
-def nuevo_task_detaill(request, task_id):
-    if request.method == 'GET':
-        try:
-            task = Task.objects.get(id=task_id) 
-        except Task.DoesNotExist:
-            return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
+# @api_view(['GET', 'PUT', 'DELETE', 'POST'])
+# @permission_classes([AllowAny])
+# def nuevo_task_detaill(request, task_id):
+#     if request.method == 'GET':
+#         try:
+#             task = Task.objects.get(id=task_id) 
+#         except Task.DoesNotExist:
+#             return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = TaskSerializer(task, context={'request': request})
-        return Response(serializer.data)
+#         serializer = TaskSerializer(task, context={'request': request})
+#         return Response(serializer.data)
 
-    elif request.method == 'POST':
-        data_with_pk = request.data.copy() 
-        data_with_pk["user"] = request.user.id  
-        serializer = NuevoTaskSerializer(data=data_with_pk)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+#     elif request.method == 'POST':
+#         data_with_pk = request.data.copy() 
+#         data_with_pk["user"] = request.user.id  
+#         serializer = NuevoTaskSerializer(data=data_with_pk)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data, status=201)
+#         return Response(serializer.errors, status=400)
     
-    try:
-        task = NuevoTask.objects.get(id=task_id)
-    except NuevoTask.DoesNotExist:
-        return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
+#     try:
+#         task = NuevoTask.objects.get(id=task_id)
+#     except NuevoTask.DoesNotExist:
+#         return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    if request.method == 'PUT':
-        like = task.like_set.filter(user=request.user).first()
+#     if request.method == 'PUT':
+#         like = task.like_set.filter(user=request.user).first()
         
-        if like:
-            like.delete()
-            return Response({'status': 'like removed'}, status=status.HTTP_200_OK)
+#         if like:
+#             like.delete()
+#             return Response({'status': 'like removed'}, status=status.HTTP_200_OK)
 
-        else:
-            serializer = LikeSerializer(data={'task': task_id})
-            if serializer.is_valid():
-                serializer.save(user=request.user)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+#         else:
+#             serializer = LikeSerializer(data={'task': task_id})
+#             if serializer.is_valid():
+#                 serializer.save(user=request.user)
+#                 return Response(serializer.data, status=status.HTTP_201_CREATED)
+#             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    elif request.method == 'DELETE':
-        task = get_object_or_404(NuevoTask, id=task_id, user_id=request.user.id)
-        task.delete()
-        return Response(status=204)
+#     elif request.method == 'DELETE':
+#         task = get_object_or_404(NuevoTask, id=task_id, user_id=request.user.id)
+#         task.delete()
+#         return Response(status=204)
 
-@api_view(['GET', 'PUT', 'DELETE', 'POST'])
-@permission_classes([AllowAny])
-def nuevo_task_detail(request):
-    if request.method == 'GET':
-        tasks = NuevoTask.objects.all()
-        serializer = NuevoTaskSerializer(tasks, many=True)
-        return Response(serializer.data)
-    return JsonResponse({'status': 'received'})
+# @api_view(['GET', 'PUT', 'DELETE', 'POST'])
+# @permission_classes([AllowAny])
+# def nuevo_task_detail(request):
+#     if request.method == 'GET':
+#         tasks = NuevoTask.objects.all()
+#         serializer = NuevoTaskSerializer(tasks, many=True)
+#         return Response(serializer.data)
+#     return JsonResponse({'status': 'received'})
 
 # @api_view(['GET', 'PUT', 'DELETE', 'POST'])
 # @permission_classes([AllowAny])
@@ -1175,12 +1207,7 @@ def nuevo_task_detail(request):
 #             print(serializer.errors)
 #             return Response(serializer.errors, status=400)
     
-@api_view(['POST'])
-def test_view(request):
-    print(request.data)
-    categories_json = request.data.get('categories', '[]')
-    print("Categories JSON:", categories_json)
-    return Response({'status': 'Received'})
+
 # auth start
 
 @api_view(["POST",])
