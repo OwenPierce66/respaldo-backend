@@ -203,6 +203,9 @@ class CreateNewPeticionCommentSerializer(serializers.ModelSerializer):
         model = NewPeticionCommentPost
         fields = "__all__"
 
+    def get_likes_count(self, obj):
+        return getattr(obj, 'likes_count', obj.likes.count())
+
 class LikeCommentSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
 
@@ -252,17 +255,18 @@ class TaskSerializer(serializers.ModelSerializer):
         return None
 
     def get_shared_by_list(self, obj):
-        shared_tasks = obj.shared_tasks.all()
-        return [
-            {
-                "id": st.shared_by.id,
-                "username": st.shared_by.username,
-                "email": st.shared_by.email,
-                "is_staff": st.shared_by.is_staff,
-                "description": st.description,  # 👈 aquí va la descripción
-            }
-            for st in shared_tasks
-        ]
+        out = []
+        for st in obj.shared_tasks.all():
+            sb = st.shared_by
+            out.append({
+                "id": sb.id if sb else None,
+                "username": getattr(sb, "username", "unknown") if sb else "unknown",
+                "email": getattr(sb, "email", None) if sb else None,
+                "is_staff": getattr(sb, "is_staff", False) if sb else False,
+                "description": st.description or "",
+            })
+        return out
+
 
 
 

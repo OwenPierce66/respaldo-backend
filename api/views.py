@@ -78,6 +78,7 @@ from .models import ForumPostt
 
 from rest_framework.pagination import CursorPagination
 from rest_framework.pagination import LimitOffsetPagination
+
 # Vista para listar y crear portadas
 # views.py
 class TaskFeedLimitOffset(LimitOffsetPagination):
@@ -88,35 +89,28 @@ class TaskFeedLimitOffset(LimitOffsetPagination):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def task_feed(request):
-    """
-    Feed paginado con:
-      - ?ordering= -created_at | created_at | -likes_count | likes_count
-      - ?period= day | week | month  (opcional)
-    """
-
-    # --- 1) Leer parámetros del front ---
     ordering = request.query_params.get('ordering') or '-created_at'
     allowed_orderings = {'-created_at', 'created_at', '-likes_count', 'likes_count'}
     if ordering not in allowed_orderings:
-        ordering = '-created_at'  # fallback seguro
+        ordering = '-created_at'
 
     period = request.query_params.get('period')  # day | week | month | None
 
-    # --- 2) Base queryset con annotate(likes_count) ---
     qs = (
         Task.objects
-        .annotate(likes_count=Count('like_set', distinct=True))
+        # 👇 usa 'like' (NO 'like_set') para el annotate
+        .annotate(likes_count=Count('like', distinct=True))
         .select_related('user')
         .prefetch_related(
-            Prefetch('subtasks'),
-            Prefetch('subfactores'),
-            Prefetch('subfuentes'),
-            Prefetch('shared_tasks', queryset=SharedTask.objects.select_related('shared_by')),
-            Prefetch('like_set'),
+            # estos sí usan el atributo reverse real
+            'subtasks',
+            'subfactores',
+            'subfuentes',
+            'shared_tasks',   # tienes related_name='shared_tasks' en SharedTask
+            'like_set',       # aquí sí va like_set porque es el atributo reverse
         )
     )
 
-    # --- 3) Filtro por periodo (top del día / semana / mes) ---
     if period:
         today = now().date()
         if period == 'day':
@@ -125,12 +119,10 @@ def task_feed(request):
             qs = qs.filter(created_at__date__gte=today - timedelta(days=7))
         elif period == 'month':
             qs = qs.filter(created_at__date__gte=today - timedelta(days=30))
-        # si viene algo raro, no se filtra por fecha
 
-    # --- 4) Orden global (estable) ---
-    qs = qs.order_by(ordering, '-id')  # -id como desempate
+    # ya puedes ordenar por -likes_count sin tronar
+    qs = qs.order_by(ordering, '-id')
 
-    # --- 5) Paginación limit/offset como ya tenías ---
     paginator = TaskFeedLimitOffset()
     page = paginator.paginate_queryset(qs, request)
     serializer = TaskSerializer(page, many=True, context={'request': request})
@@ -691,27 +683,32 @@ def users_who_liked_task_comment(request, task_id):
 def tasks_by_id(request, task_id):
     if request.method == 'GET':
         tasks = Task.objects.filter(id=task_id).prefetch_related('like_set')
-        serializer = TaskSerializer(task, many=True)
+        serializer = TaskSerializer(tasks, many=True)
         return Response(serializer.data)
    
+class CommentPagination(LimitOffsetPagination):
+    default_limit = 10
+    max_limit = 50
+    
 class NewPeticionCommentView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+
+    # POST (tu código actual tal cual)
     def post(self, request, task_id):
         data = request.data.dict()
         data['post'] = task_id
         data['created_by'] = request.user.id
 
-        print("Data to be serialized:", data)
         if 'aportacion' in request.data and request.data['aportacion']:
             data['aportacion'] = request.data['aportacion']
         
-        serializer = CreateNewPeticionCommentSerializer(data=data)
+        serializer = CreateNewPeticionCommentSerializer(data=data, context={'request': request})
         if serializer.is_valid():
-            print("Datos validados y serializados:", serializer.validated_data)
             comment = serializer.save()
 
+            # Subtasks
             index = 0
             while f'subtasks[{index}][title]' in request.data:
                 subtask_data = {
@@ -722,16 +719,12 @@ class NewPeticionCommentView(APIView):
                     'video': request.FILES.get(f'subtasks[{index}][video]'),
                     'link': request.data.get(f'subtasks[{index}][link]')
                 }
-                print(f"Subtask {index} data to be serialized:", subtask_data)
-
-                subtask_serializer = SubTaskCommentPostSerializer(data=subtask_data)
-                if subtask_serializer.is_valid():
-                    subtask_serializer.save()
-                else:
-                    print("Subtask serializer errors:", subtask_serializer.errors)
-                    return Response(subtask_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                subtask_serializer = SubTaskCommentPostSerializer(data=subtask_data, context={'request': request})
+                subtask_serializer.is_valid(raise_exception=True)
+                subtask_serializer.save()
                 index += 1
 
+            # Subfuentes
             index = 0 
             while f'subfuentes[{index}][title]' in request.data:
                 subFuentes_data = {
@@ -742,16 +735,12 @@ class NewPeticionCommentView(APIView):
                     'video': request.FILES.get(f'subfuentes[{index}][video]'),
                     'link': request.data.get(f'subfuentes[{index}][link]')
                 }
-                print(f"Subfuentes {index} data to be serialized:", subFuentes_data)
-
-                subfuentes_serializer = SubFuentesPCHPostSerializer(data=subFuentes_data)
-                if subfuentes_serializer.is_valid():
-                    subfuentes_serializer.save()
-                else:
-                    print("Subfuentes serializer errors:", subfuentes_serializer.errors)
-                    return Response(subfuentes_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                subfuentes_serializer = SubFuentesPCHPostSerializer(data=subFuentes_data, context={'request': request})
+                subfuentes_serializer.is_valid(raise_exception=True)
+                subfuentes_serializer.save()
                 index += 1
 
+            # Subfactores
             index = 0 
             while f'subfactores[{index}][title]' in request.data:
                 subFactores_data = {
@@ -762,26 +751,40 @@ class NewPeticionCommentView(APIView):
                     'video': request.FILES.get(f'subfactores[{index}][video]'),
                     'link': request.data.get(f'subfactores[{index}][link]')
                 }
-                print(f"Subfactores {index} data to be serialized:", subFactores_data)
-
-                subfactores_serializer = SubFactoresPCHPostSerializer(data=subFactores_data)
-                if subfactores_serializer.is_valid():
-                    subfactores_serializer.save()
-                else:
-                    print("Subfactores serializer errors:", subfactores_serializer.errors)
-                    return Response(subfactores_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                subfactores_serializer = SubFactoresPCHPostSerializer(data=subFactores_data, context={'request': request})
+                subfactores_serializer.is_valid(raise_exception=True)
+                subfactores_serializer.save()
                 index += 1
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-        else:
-            print("Serializer errors:", serializer.errors)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # GET con paginación, filtro por ventana y orden
     def get(self, request, task_id):
-        comments = NewPeticionCommentPost.objects.filter(post=task_id).order_by('-created_at')
-        serializer = NewPeticionCommentSerializer(comments, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        qs = NewPeticionCommentPost.objects.filter(post=task_id)
 
+        # period: day | week | month (opcional)
+        period = request.query_params.get('period')
+        if period in ('day', 'week', 'month'):
+            days = {'day': 1, 'week': 7, 'month': 30}[period]
+            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=days))
+
+        # ordering: "-created_at" | "created_at" | "-likes_count" | "likes_count"
+        ordering = request.query_params.get('ordering', '-created_at')
+        if 'likes_count' in ordering:
+            qs = qs.annotate(_likes_count=Count('likes'))
+            qs = qs.order_by('-_likes_count', '-created_at') if ordering.startswith('-') \
+                 else qs.order_by('_likes_count', '-created_at')
+        else:
+            if ordering not in ('created_at', '-created_at'):
+                ordering = '-created_at'
+            qs = qs.order_by(ordering)
+
+        paginator = CommentPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = NewPeticionCommentSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 class NewPeticionCommentDetailsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -868,6 +871,18 @@ def comment_detail(request, comment_id):
         task = get_object_or_404(Comment, id=comment_id)
         task.delete()
         return Response(status=204)
+    
+class CommentLikesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, task_id, comment_id):
+        comment = get_object_or_404(NewPeticionCommentPost, id=comment_id, post_id=task_id)
+        likes = comment.likes.select_related('user').all()
+        users = [l.user for l in likes if l.user_id]
+        data = UserSerializer(users, many=True, context={'request': request}).data
+        return Response(data, status=200)
+
+
     
 
 @api_view(['GET', 'PUT', 'DELETE', 'POST'])
