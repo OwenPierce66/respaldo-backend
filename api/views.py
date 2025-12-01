@@ -78,7 +78,7 @@ from .models import ForumPostt
 
 from rest_framework.pagination import CursorPagination
 from rest_framework.pagination import LimitOffsetPagination
-
+from django.utils import timezone
 # Vista para listar y crear portadas
 # views.py
 class TaskFeedLimitOffset(LimitOffsetPagination):
@@ -762,29 +762,81 @@ class NewPeticionCommentView(APIView):
 
     # GET con paginación, filtro por ventana y orden
     def get(self, request, task_id):
+        # asegurarse que existe la tarea (opcional)
+        # from django.shortcuts import get_object_or_404
+        # get_object_or_404(Task, id=task_id)
+
         qs = NewPeticionCommentPost.objects.filter(post=task_id)
 
-        # period: day | week | month (opcional)
-        period = request.query_params.get('period')
-        if period in ('day', 'week', 'month'):
-            days = {'day': 1, 'week': 7, 'month': 30}[period]
-            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=days))
+        # period: day | week | month
+        period = request.query_params.get('period', '')
+        if period:
+            if period not in ('day', 'week', 'month'):
+                return Response({'detail': 'Invalid period parameter'}, status=status.HTTP_400_BAD_REQUEST)
+            days_map = {'day': 1, 'week': 7, 'month': 30}
+            days = days_map[period]
+            qs = qs.filter(created_at__gte=now() - timedelta(days=days))
 
         # ordering: "-created_at" | "created_at" | "-likes_count" | "likes_count"
         ordering = request.query_params.get('ordering', '-created_at')
-        if 'likes_count' in ordering:
-            qs = qs.annotate(_likes_count=Count('likes'))
-            qs = qs.order_by('-_likes_count', '-created_at') if ordering.startswith('-') \
-                 else qs.order_by('_likes_count', '-created_at')
-        else:
-            if ordering not in ('created_at', '-created_at'):
-                ordering = '-created_at'
-            qs = qs.order_by(ordering)
+        # Normalizar ordering para que no rompa si llega algo inesperado
+        try:
+            if 'likes_count' in ordering:
+                # Asegúrate que tu related_name para likes es 'likes'
+                qs = qs.annotate(_likes_count=Count('likes'))
+                if ordering.startswith('-'):
+                    qs = qs.order_by('-_likes_count', '-created_at')
+                else:
+                    qs = qs.order_by('_likes_count', '-created_at')
+            else:
+                if ordering not in ('created_at', '-created_at'):
+                    ordering = '-created_at'
+                qs = qs.order_by(ordering)
+        except Exception:
+            # fallback seguro por si algo falla con Count u ordenamiento
+            qs = qs.order_by('-created_at')
+
+        paginator = CommentPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = NewPeticionCommentSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
+        qs = NewPeticionCommentPost.objects.filter(post=task_id)
+
+        # period: day | week | month (opcional)
+        period = request.query_params.get('period', None)
+        try:
+            if period:
+                if period in ('day', 'week', 'month'):
+                    days_map = {'day': 1, 'week': 7, 'month': 30}
+                    days = days_map[period]
+                    qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=days))
+                else:
+                    return Response({'detail': 'Invalid period parameter'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            # devolvemos un error genérico para no filtrar detalles internos
+            return Response({'detail': 'Server error processing period'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # ordering: "-created_at" | "created_at" | "-likes_count" | "likes_count"
+        ordering = request.query_params.get('ordering', '-created_at')
+        try:
+            if 'likes_count' in ordering:
+                # Asegúrate que el related_name o campo de likes es 'likes'
+                qs = qs.annotate(_likes_count=Count('likes'))
+                qs = qs.order_by('-_likes_count', '-created_at') if ordering.startswith('-') \
+                    else qs.order_by('_likes_count', '-created_at')
+            else:
+                if ordering not in ('created_at', '-created_at'):
+                    ordering = '-created_at'
+                qs = qs.order_by(ordering)
+        except Exception:
+            # fallback seguro: ordenar por fecha si algo sale mal
+            qs = qs.order_by('-created_at')
 
         paginator = CommentPagination()
         page = paginator.paginate_queryset(qs, request)
         serializer = NewPeticionCommentSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
+
 
 class NewPeticionCommentDetailsView(APIView):
     permission_classes = [IsAuthenticated]
