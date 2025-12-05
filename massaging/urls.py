@@ -13,4 +13,6 @@ urlpatterns = [
     path('groupss/<int:group_id>/make_admin/', make_admin, name='make-admin'),
     path('groupss/<int:group_id>/messages/', group_messages, name='group-messages'),
     path('groupss/<int:group_id>/send_message/', send_group_message, name='send-group-message'),
+     path('groupss/<int:group_id>/delete/', delete_group, name='delete-group'),
+    path("conversations/", UnifiedConversationsView.as_view(), name="unified-conversations"),
 ]
