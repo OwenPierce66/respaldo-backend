@@ -15,6 +15,38 @@ from django.shortcuts import get_object_or_404
 
 
 
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_message(request, message_id):
+    message = get_object_or_404(Message, id=message_id)
+
+    # solo el que lo envió puede borrarlo
+    if message.sender != request.user:
+        return Response(
+            {'error': 'Solo puedes borrar tus propios mensajes.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    message.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_group_message(request, message_id):
+    message = get_object_or_404(GroupMessage, id=message_id)
+
+    if message.sender != request.user:
+        return Response(
+            {'error': 'Solo puedes borrar tus propios mensajes.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    # opcional: validar que siga siendo miembro del grupo, etc.
+    message.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def delete_group(request, group_id):
@@ -148,6 +180,98 @@ def user_list(request):
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 @permission_classes([IsAuthenticated])
 def message_list(request):
+    if request.method == 'GET':
+        user_id = request.query_params.get('user_id')
+        page = int(request.query_params.get('page', 1))
+        page_size = 10  # You can adjust the page size as needed
+
+        try:
+            if user_id:
+                messages = Message.objects.filter(
+                    Q(sender_id=request.user.id, receiver_id=user_id) |
+                    Q(sender_id=user_id, receiver_id=request.user.id)
+                ).order_by('-timestamp')
+            else:
+                messages = Message.objects.all().order_by('-timestamp')
+
+            start = (page - 1) * page_size
+            end = start + page_size
+            paginated_messages = messages[start:end]
+
+            serializer = MessageSerializer(
+                paginated_messages,
+                many=True,
+                context={'request': request}
+            )
+            return Response(serializer.data)
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    # ================== POST ==================
+    elif request.method == 'POST':
+        try:
+            # ⚠️ ya NO usamos serializer con data + archivos aquí
+
+            # 1) Validar receiver
+            receiver_id = request.data.get('receiver')
+            if not receiver_id:
+                return Response(
+                    {"error": "Receiver ID is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            receiver = get_object_or_404(User, id=receiver_id)
+
+            # 2) Datos simples
+            content = request.data.get('content', '')
+
+            # 3) Archivos individuales (compatibles con tu modelo Message)
+            image = request.FILES.get('image')
+            video = request.FILES.get('video')
+
+            # 4) Crear el mensaje directamente
+            message = Message.objects.create(
+                sender=request.user,
+                receiver=receiver,
+                content=content,
+                image=image,
+                video=video,
+            )
+
+            # 5) Crear adjuntos extra (MessageAttachment)
+            files = request.FILES.getlist('attachments')
+            for f in files:
+                ct = getattr(f, 'content_type', '') or ''
+                MessageAttachment.objects.create(
+                    message=message,
+                    file=f,
+                    file_type=ct,
+                    is_image=ct.startswith('image/'),
+                    is_video=ct.startswith('video/'),
+                )
+
+            # 6) Serializar SOLO para salida
+            out_serializer = MessageSerializer(
+                message,
+                context={'request': request}
+            )
+            return Response(out_serializer.data, status=status.HTTP_201_CREATED)
+
+        except User.DoesNotExist:
+            return Response(
+                {"error": "Receiver not found"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            # Aquí seguirás viendo cualquier error real en JSON
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     if request.method == 'GET':
         user_id = request.query_params.get('user_id')
         page = int(request.query_params.get('page', 1))

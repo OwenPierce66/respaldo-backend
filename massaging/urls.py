@@ -15,4 +15,6 @@ urlpatterns = [
     path('groupss/<int:group_id>/send_message/', send_group_message, name='send-group-message'),
      path('groupss/<int:group_id>/delete/', delete_group, name='delete-group'),
     path("conversations/", UnifiedConversationsView.as_view(), name="unified-conversations"),
+    path('messages/<int:message_id>/delete/', delete_message, name='delete-message'),
+    path('group_messages/<int:message_id>/delete/', delete_group_message, name='delete-group-message'),
 ]
