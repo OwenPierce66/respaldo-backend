@@ -12,6 +12,8 @@ from .models import (
 )
 
 
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -30,6 +32,15 @@ class GroupMessageAttachmentSerializer(serializers.ModelSerializer):
         fields = ['id', 'file', 'file_type', 'is_image', 'is_video']
 
 
+# 👇 NUEVO: versión reducida del mensaje para usar en replied_to
+class MessageReplySerializer(serializers.ModelSerializer):
+    sender = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Message
+        fields = ['id', 'sender', 'content', 'timestamp']
+
+
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     receiver = UserSerializer(read_only=True)
@@ -39,8 +50,10 @@ class MessageSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
 
-    # 👇 adjuntos nuevos
     attachments = MessageAttachmentSerializer(many=True, read_only=True)
+
+    # 👇 NUEVO: mensaje al que responde (solo lectura)
+    replied_to = MessageReplySerializer(read_only=True)
 
     class Meta:
         model = Message
@@ -56,16 +69,13 @@ class MessageSerializer(serializers.ModelSerializer):
             'likes_count',
             'user_has_liked',
             'attachments',
+            'replied_to',   # 👈 importante
         ]
 
-    # 🔹 Métodos para SerializerMethodField
-
     def get_likes_count(self, obj):
-        # cuenta de likes del mensaje
         return obj.likes.count()
 
     def get_user_has_liked(self, obj):
-        # si el usuario autenticado le dio like
         request = self.context.get('request', None)
         if not request or not hasattr(request, 'user'):
             return False
@@ -128,9 +138,20 @@ class GroupMembershipSerializer(serializers.ModelSerializer):
         fields = ['user', 'group', 'is_admin', 'joined_at']
 
 
+# 👇 NUEVO: versión reducida para replied_to en grupos
+class GroupMessageReplySerializer(serializers.ModelSerializer):
+    sender = UserSerializer(read_only=True)
+
+    class Meta:
+        model = GroupMessage
+        fields = ['id', 'sender', 'content', 'timestamp']
+
+
 class GroupMessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     attachments = GroupMessageAttachmentSerializer(many=True, read_only=True)
+    # 👇 NUEVO
+    replied_to = GroupMessageReplySerializer(read_only=True)
 
     class Meta:
         model = GroupMessage
@@ -143,4 +164,5 @@ class GroupMessageSerializer(serializers.ModelSerializer):
             'video',
             'timestamp',
             'attachments',
+            'replied_to',   # 👈 importante
         ]

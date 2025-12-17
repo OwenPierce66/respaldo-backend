@@ -1,19 +1,32 @@
-
 from django.utils import timezone
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
+
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework import status
+
 from django.contrib.auth.models import User
-from .models import *
-from .serializers import *
-from django.shortcuts import get_object_or_404
 
-
+from .models import (
+    Message,
+    MessageLike,
+    MessageAttachment,
+    Group,
+    GroupMembership,
+    GroupMessage,
+    GroupMessageAttachment,
+)
+from .serializers import (
+    UserSerializer,
+    MessageSerializer,
+    GroupSerializer,
+    GroupMembershipSerializer,
+    GroupMessageSerializer,
+)
 
 
 @api_view(['DELETE'])
@@ -31,6 +44,7 @@ def delete_message(request, message_id):
     message.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
+
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def delete_group_message(request, message_id):
@@ -42,7 +56,6 @@ def delete_group_message(request, message_id):
             status=status.HTTP_403_FORBIDDEN
         )
 
-    # opcional: validar que siga siendo miembro del grupo, etc.
     message.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -61,7 +74,6 @@ def delete_group(request, group_id):
 
     group.delete()
     return Response({'status': 'group deleted'}, status=status.HTTP_200_OK)
-
 
 
 class UnifiedConversationsView(APIView):
@@ -125,29 +137,26 @@ class UnifiedConversationsView(APIView):
                 "last_timestamp": last_msg.timestamp if last_msg else None,
             }
 
-        # ---------- 3) Convertir a lista y ORDENAR (ahora sin comparar datetimes entre sí) ----------
+        # ---------- 3) Convertir a lista y ORDENAR ----------
         convs = list(conversations_map.values())
 
-        # Creamos un valor numérico auxiliar para ordenar
         for c in convs:
             ts = c["last_timestamp"]
             if ts is None:
-                c["_sort_ts"] = 0.0  # muy viejo
+                c["_sort_ts"] = 0.0
             else:
-                # timestamp() funciona tanto con naive como con aware
                 c["_sort_ts"] = ts.timestamp()
 
-        # Ordenar por el número, no por el datetime directamente
         convs.sort(key=lambda c: c["_sort_ts"], reverse=True)
 
-        # Limpieza: convertimos last_timestamp a iso y quitamos el campo auxiliar
         for c in convs:
             ts = c["last_timestamp"]
             c["last_timestamp"] = ts.isoformat() if ts else None
             c.pop("_sort_ts", None)
 
         return Response(convs)
-    
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def like_unlike_message(request, message_id):
@@ -158,6 +167,7 @@ def like_unlike_message(request, message_id):
         return Response({'status': 'like removed'})
     return Response({'status': 'like added'})
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def users_who_liked_message(request, message_id):
@@ -165,6 +175,7 @@ def users_who_liked_message(request, message_id):
     users = [like.user for like in message.likes.all()]
     serializer = UserSerializer(users, many=True)
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -176,14 +187,23 @@ def user_list(request):
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['GET', 'POST'])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 @permission_classes([IsAuthenticated])
 def message_list(request):
+    """
+    GET  -> lista paginada de mensajes directos con otro usuario (user_id)
+    POST -> crea un mensaje directo, soporta:
+            - content
+            - image / video
+            - attachments[]
+            - reply_to  (id del mensaje al que responde)
+    """
     if request.method == 'GET':
         user_id = request.query_params.get('user_id')
         page = int(request.query_params.get('page', 1))
-        page_size = 10  # You can adjust the page size as needed
+        page_size = 10
 
         try:
             if user_id:
@@ -211,125 +231,69 @@ def message_list(request):
             )
 
     # ================== POST ==================
-    elif request.method == 'POST':
-        try:
-            # ⚠️ ya NO usamos serializer con data + archivos aquí
-
-            # 1) Validar receiver
-            receiver_id = request.data.get('receiver')
-            if not receiver_id:
-                return Response(
-                    {"error": "Receiver ID is required"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            receiver = get_object_or_404(User, id=receiver_id)
-
-            # 2) Datos simples
-            content = request.data.get('content', '')
-
-            # 3) Archivos individuales (compatibles con tu modelo Message)
-            image = request.FILES.get('image')
-            video = request.FILES.get('video')
-
-            # 4) Crear el mensaje directamente
-            message = Message.objects.create(
-                sender=request.user,
-                receiver=receiver,
-                content=content,
-                image=image,
-                video=video,
-            )
-
-            # 5) Crear adjuntos extra (MessageAttachment)
-            files = request.FILES.getlist('attachments')
-            for f in files:
-                ct = getattr(f, 'content_type', '') or ''
-                MessageAttachment.objects.create(
-                    message=message,
-                    file=f,
-                    file_type=ct,
-                    is_image=ct.startswith('image/'),
-                    is_video=ct.startswith('video/'),
-                )
-
-            # 6) Serializar SOLO para salida
-            out_serializer = MessageSerializer(
-                message,
-                context={'request': request}
-            )
-            return Response(out_serializer.data, status=status.HTTP_201_CREATED)
-
-        except User.DoesNotExist:
+    # Crear mensaje directo
+    try:
+        # 1) Validar receiver
+        receiver_id = request.data.get('receiver')
+        if not receiver_id:
             return Response(
-                {"error": "Receiver not found"},
+                {"error": "Receiver ID is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        except Exception as e:
-            # Aquí seguirás viendo cualquier error real en JSON
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+
+        receiver = get_object_or_404(User, id=receiver_id)
+
+        # 2) Datos simples
+        content = request.data.get('content', '')
+
+        # 3) Archivos individuales
+        image = request.FILES.get('image')
+        video = request.FILES.get('video')
+
+        # 4) Mensaje al que responde (opcional)
+        reply_to_id = request.data.get('reply_to')
+        replied_to = None
+        if reply_to_id:
+            try:
+                replied_to = Message.objects.get(id=reply_to_id)
+            except Message.DoesNotExist:
+                replied_to = None
+
+        # 5) Crear el mensaje
+        message = Message.objects.create(
+            sender=request.user,
+            receiver=receiver,
+            content=content,
+            image=image,
+            video=video,
+            replied_to=replied_to,
+        )
+
+        # 6) Adjuntos extra
+        files = request.FILES.getlist('attachments')
+        for f in files:
+            ct = getattr(f, 'content_type', '') or ''
+            MessageAttachment.objects.create(
+                message=message,
+                file=f,
+                file_type=ct,
+                is_image=ct.startswith('image/'),
+                is_video=ct.startswith('video/'),
             )
 
-    if request.method == 'GET':
-        user_id = request.query_params.get('user_id')
-        page = int(request.query_params.get('page', 1))
-        page_size = 10  # You can adjust the page size as needed
+        # 7) Serializar para salida
+        out_serializer = MessageSerializer(
+            message,
+            context={'request': request}
+        )
+        return Response(out_serializer.data, status=status.HTTP_201_CREATED)
 
-        try:
-            if user_id:
-                messages = Message.objects.filter(
-                    Q(sender_id=request.user.id, receiver_id=user_id) |
-                    Q(sender_id=user_id, receiver_id=request.user.id)
-                ).order_by('-timestamp')
-            else:
-                messages = Message.objects.all().order_by('-timestamp')
+    except Exception as e:
+        return Response(
+            {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
-            start = (page - 1) * page_size
-            end = start + page_size
-            paginated_messages = messages[start:end]
-
-            serializer = MessageSerializer(paginated_messages, many=True, context={'request': request})
-            return Response(serializer.data)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    elif request.method == 'POST':
-            try:
-                data = request.data.copy()
-                data['sender'] = request.user.id
-                receiver_id = data.get('receiver')
-                if receiver_id:
-                    receiver = User.objects.get(id=receiver_id)
-                    data['receiver'] = receiver_id
-                else:
-                    return Response({"error": "Receiver ID is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-                serializer = MessageSerializer(data=data, context={'request': request})
-                if serializer.is_valid():
-                    # 👉 obtenemos la instancia guardada
-                    message = serializer.save(sender=request.user, receiver=receiver)
-
-                    # 👉 aquí recogemos TODOS los adjuntos enviados como "attachments"
-                    files = request.FILES.getlist('attachments')
-                    for f in files:
-                        MessageAttachment.objects.create(
-                            message=message,
-                            file=f,
-                            file_type=getattr(f, 'content_type', '') or '',
-                            is_image=(getattr(f, 'content_type', '') or '').startswith('image/'),
-                            is_video=(getattr(f, 'content_type', '') or '').startswith('video/'),
-                        )
-
-                    # devolvemos el mensaje ya con attachments serializados
-                    out_serializer = MessageSerializer(message, context={'request': request})
-                    return Response(out_serializer.data, status=status.HTTP_201_CREATED)
-                else:
-                    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            except User.DoesNotExist:
-                return Response({"error": "Receiver not found"}, status=status.HTTP_400_BAD_REQUEST)
-            except Exception as e:
-                return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -337,15 +301,16 @@ def create_group(request):
     name = request.data.get('name')
     if not name:
         return Response({'error': 'Group name is required'}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     group = Group.objects.create(name=name, created_by=request.user)
     GroupMembership.objects.create(user=request.user, group=group, is_admin=True)
     return Response(GroupSerializer(group).data, status=status.HTTP_201_CREATED)
 
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def add_member(request, group_id):
-    group = Group.objects.get(id=group_id)
+    group = get_object_or_404(Group, id=group_id)
 
     # 👉 creador o admin puede agregar
     is_creator = group.created_by_id == request.user.id
@@ -355,17 +320,20 @@ def add_member(request, group_id):
 
     if not (is_creator or is_admin):
         return Response({'error': 'Only admins can add members'}, status=status.HTTP_403_FORBIDDEN)
-    
+
     user_id = request.data.get('user_id')
-    user = User.objects.get(id=user_id)
-    GroupMembership.objects.create(user=user, group=group)
+    if not user_id:
+        return Response({'error': 'user_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = get_object_or_404(User, id=user_id)
+    GroupMembership.objects.get_or_create(user=user, group=group)
     return Response({'status': 'member added'}, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def remove_member(request, group_id):
-    group = Group.objects.get(id=group_id)
+    group = get_object_or_404(Group, id=group_id)
 
     # 👉 creador o admin puede eliminar
     is_creator = group.created_by_id == request.user.id
@@ -375,9 +343,12 @@ def remove_member(request, group_id):
 
     if not (is_creator or is_admin):
         return Response({'error': 'Only admins can remove members'}, status=status.HTTP_403_FORBIDDEN)
-    
+
     user_id = request.data.get('user_id')
-    user = User.objects.get(id=user_id)
+    if not user_id:
+        return Response({'error': 'user_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = get_object_or_404(User, id=user_id)
     GroupMembership.objects.filter(user=user, group=group).delete()
     return Response({'status': 'member removed'}, status=status.HTTP_200_OK)
 
@@ -395,7 +366,6 @@ def make_admin(request, group_id):
         is_admin=True
     ).exists()
 
-    # OJO: aquí va "or", no "||"
     if not (is_creator or is_admin):
         return Response(
             {'error': 'Solo administradores pueden hacer admin a otros.'},
@@ -411,7 +381,6 @@ def make_admin(request, group_id):
 
     user = get_object_or_404(User, id=user_id)
 
-    # Aseguramos que tenga membership (por si acaso)
     membership, _ = GroupMembership.objects.get_or_create(
         user=user,
         group=group,
@@ -437,30 +406,39 @@ def list_groups(request):
     serializer = GroupSerializer(groups, many=True, context={'request': request})
     return Response(serializer.data)
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def group_messages(request, group_id):
-    group = Group.objects.get(id=group_id)
+    group = get_object_or_404(Group, id=group_id)
     if not GroupMembership.objects.filter(group=group, user=request.user).exists():
         return Response({'error': 'You are not a member of this group'}, status=status.HTTP_403_FORBIDDEN)
-    
+
     messages = GroupMessage.objects.filter(group=group).order_by('-timestamp')
     return Response(GroupMessageSerializer(messages, many=True).data)
 
 
 @api_view(['POST'])
-@parser_classes([JSONParser, MultiPartParser, FormParser])  # 👈 importante
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 @permission_classes([IsAuthenticated])
 def send_group_message(request, group_id):
-    group = Group.objects.get(id=group_id)
+    group = get_object_or_404(Group, id=group_id)
     if not GroupMembership.objects.filter(group=group, user=request.user).exists():
         return Response({'error': 'You are not a member of this group'}, status=status.HTTP_403_FORBIDDEN)
-    
-    content = request.data.get('content')
 
-    # archivos individuales (primer imagen / video si los mandas)
+    content = request.data.get('content', '')
+
     image = request.FILES.get('image')
     video = request.FILES.get('video')
+
+    # reply_to para mensajes de grupo
+    reply_to_id = request.data.get('reply_to')
+    replied_to = None
+    if reply_to_id:
+        try:
+            replied_to = GroupMessage.objects.get(id=reply_to_id)
+        except GroupMessage.DoesNotExist:
+            replied_to = None
 
     message = GroupMessage.objects.create(
         group=group,
@@ -468,9 +446,9 @@ def send_group_message(request, group_id):
         content=content,
         image=image,
         video=video,
+        replied_to=replied_to,
     )
 
-    # 🔴 aquí guardamos TODOS los adjuntos extra
     files = request.FILES.getlist('attachments')
     for f in files:
         GroupMessageAttachment.objects.create(

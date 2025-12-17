@@ -16,13 +16,24 @@ class Message(models.Model):
         on_delete=models.CASCADE
     )
     content = models.TextField(blank=True, null=True)
-    translated_content = models.TextField(blank=True, null=True)  # Nuevo campo para el contenido traducido
+    translated_content = models.TextField(blank=True, null=True)
     image = models.ImageField(storage=ImagenText(), null=True, blank=True)
     video = models.FileField(storage=VideoStorage(), null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
+    # 👇 NUEVO: referencia al mensaje al que responde (opcional)
+    replied_to = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        related_name='replies',
+        on_delete=models.SET_NULL,
+    )
+
     def __str__(self):
         return f'Message from {self.sender} to {self.receiver}'
+
+
 
 
 class MessageLike(models.Model):
@@ -41,15 +52,12 @@ class MessageLike(models.Model):
         return f'{self.user} liked {self.message_id}'
 
 
-# 🔴 NUEVO: adjuntos para mensajes directos
 class MessageAttachment(models.Model):
     message = models.ForeignKey(
         Message,
-        related_name='attachments',        # 👈 así en el serializer/frontend podrás usar msg.attachments
+        related_name='attachments',
         on_delete=models.CASCADE
     )
-    # Uso VideoStorage porque puede ser cualquier tipo de archivo (imagen, video, pdf, etc).
-    # Si quieres, puedes dejarlo sin storage y usar el default.
     file = models.FileField(
         upload_to='messages/attachments/',
         storage=VideoStorage()
@@ -59,7 +67,6 @@ class MessageAttachment(models.Model):
     is_video = models.BooleanField(default=False)
 
     def save(self, *args, **kwargs):
-        # Detectar tipo de archivo la primera vez
         if self.file and not self.file_type:
             ct = getattr(self.file, 'content_type', '') or ''
             self.file_type = ct
@@ -116,15 +123,23 @@ class GroupMessage(models.Model):
     video = models.FileField(storage=VideoStorage(), null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
+    # 👇 NUEVO: referencia al mensaje de grupo al que responde
+    replied_to = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        related_name='replies',
+        on_delete=models.SET_NULL,
+    )
+
     def __str__(self):
         return f'Message from {self.sender} in group {self.group}'
 
 
-# 🔴 NUEVO: adjuntos para mensajes de grupo
 class GroupMessageAttachment(models.Model):
     message = models.ForeignKey(
         GroupMessage,
-        related_name='attachments',      # 👈 igual que en Message
+        related_name='attachments',
         on_delete=models.CASCADE
     )
     file = models.FileField(
