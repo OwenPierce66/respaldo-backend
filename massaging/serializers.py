@@ -3,7 +3,6 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
     Message,
-    MessageLike,
     MessageAttachment,
     Group,
     GroupMembership,
@@ -12,157 +11,180 @@ from .models import (
 )
 
 
-
-
 class UserSerializer(serializers.ModelSerializer):
+    """
+    Usuario con campo de imagen listo para el chat.
+    Ajusta los nombres de campos 'image', 'profile_image', 'avatar', 'image_profile'
+    según tu modelo real de perfil/usuario.
+    """
+    image = serializers.SerializerMethodField()
+    profile_image = serializers.SerializerMethodField()
+    avatar = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username']
+        fields = ["id", "username", "image", "profile_image", "avatar"]
+
+    def _get_any_image_field(self, obj):
+        # 1) campos directos en User
+        for attr in ["image", "profile_image", "avatar", "image_profile", "foto"]:
+            if hasattr(obj, attr) and getattr(obj, attr):
+                return getattr(obj, attr)
+
+        # 2) perfil relacionado (User.profile, User.perfil, etc.)
+        profile = getattr(obj, "profile", None) or getattr(obj, "perfil", None)
+        if profile:
+            for attr in ["image", "profile_image", "avatar", "image_profile", "foto"]:
+                if hasattr(profile, attr) and getattr(profile, attr):
+                    return getattr(profile, attr)
+
+        return None
+
+    def _build_url(self, file_field):
+        if not file_field:
+            return None
+        request = self.context.get("request")
+        url = file_field.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_image(self, obj):
+        return self._build_url(self._get_any_image_field(obj))
+
+    def get_profile_image(self, obj):
+        return self.get_image(obj)
+
+    def get_avatar(self, obj):
+        return self.get_image(obj)
 
 
 class MessageAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = MessageAttachment
-        fields = ['id', 'file', 'file_type', 'is_image', 'is_video']
+        fields = ["id", "file", "file_type", "is_image", "is_video"]
 
 
 class GroupMessageAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = GroupMessageAttachment
-        fields = ['id', 'file', 'file_type', 'is_image', 'is_video']
-
-
-# 👇 NUEVO: versión reducida del mensaje para usar en replied_to
-class MessageReplySerializer(serializers.ModelSerializer):
-    sender = UserSerializer(read_only=True)
-
-    class Meta:
-        model = Message
-        fields = ['id', 'sender', 'content', 'timestamp']
+        fields = ["id", "file", "file_type", "is_image", "is_video"]
 
 
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
     receiver = UserSerializer(read_only=True)
-    image = serializers.ImageField(required=False, allow_null=True)
-    video = serializers.FileField(required=False, allow_null=True)
-
-    likes_count = serializers.SerializerMethodField()
-    user_has_liked = serializers.SerializerMethodField()
-
     attachments = MessageAttachmentSerializer(many=True, read_only=True)
 
-    # 👇 NUEVO: mensaje al que responde (solo lectura)
-    replied_to = MessageReplySerializer(read_only=True)
+    # respuesta a otro mensaje
+    replied_to = serializers.SerializerMethodField()
+
+    # campos top-level por compat con el front: msg.sender_image / msg.user_image
+    sender_image = serializers.SerializerMethodField()
+    user_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = [
-            'id',
-            'sender',
-            'receiver',
-            'content',
-            'image',
-            'translated_content',
-            'video',
-            'timestamp',
-            'likes_count',
-            'user_has_liked',
-            'attachments',
-            'replied_to',   # 👈 importante
+            "id",
+            "sender",
+            "receiver",
+            "content",
+            "translated_content",
+            "image",
+            "video",
+            "timestamp",
+            "replied_to",
+            "attachments",
+            "sender_image",
+            "user_image",
         ]
 
-    def get_likes_count(self, obj):
-        return obj.likes.count()
+    def get_replied_to(self, obj):
+        if not obj.replied_to:
+            return None
+        rep = obj.replied_to
+        return {
+            "id": rep.id,
+            "content": rep.content,
+            "sender": {
+                "id": rep.sender.id,
+                "username": rep.sender.username,
+            },
+            "timestamp": rep.timestamp,
+        }
 
-    def get_user_has_liked(self, obj):
-        request = self.context.get('request', None)
-        if not request or not hasattr(request, 'user'):
-            return False
-        user = request.user
-        if not user.is_authenticated:
-            return False
-        return obj.likes.filter(user=user).exists()
+    def _get_sender_image_url(self, obj):
+        user = obj.sender
+        serializer = UserSerializer(user, context=self.context)
+        # usa el mismo campo "image" del serializer
+        return serializer.data.get("image")
+
+    def get_sender_image(self, obj):
+        return self._get_sender_image_url(obj)
+
+    def get_user_image(self, obj):
+        return self._get_sender_image_url(obj)
 
 
 class GroupSerializer(serializers.ModelSerializer):
-    members = serializers.SerializerMethodField()
-    current_user_is_admin = serializers.SerializerMethodField()
-
     class Meta:
         model = Group
-        fields = [
-            'id',
-            'name',
-            'created_at',
-            'created_by',
-            'members',
-            'current_user_is_admin',
-        ]
-
-    def get_members(self, obj):
-        memberships = GroupMembership.objects.filter(
-            group=obj
-        ).select_related('user')
-
-        return [
-            {
-                "id": m.user.id,
-                "username": m.user.username,
-                "is_admin": m.is_admin,
-                "is_creator": (obj.created_by_id == m.user_id),
-            }
-            for m in memberships
-        ]
-
-    def get_current_user_is_admin(self, obj):
-        request = self.context.get('request')
-        if not request or not hasattr(request, 'user'):
-            return False
-
-        user = request.user
-
-        if obj.created_by_id == user.id:
-            return True
-
-        return GroupMembership.objects.filter(
-            group=obj,
-            user=user,
-            is_admin=True
-        ).exists()
+        fields = ["id", "name", "created_at", "created_by"]
 
 
 class GroupMembershipSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+
     class Meta:
         model = GroupMembership
-        fields = ['user', 'group', 'is_admin', 'joined_at']
-
-
-# 👇 NUEVO: versión reducida para replied_to en grupos
-class GroupMessageReplySerializer(serializers.ModelSerializer):
-    sender = UserSerializer(read_only=True)
-
-    class Meta:
-        model = GroupMessage
-        fields = ['id', 'sender', 'content', 'timestamp']
+        fields = ["id", "user", "group", "is_admin", "joined_at"]
 
 
 class GroupMessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
+    group = serializers.PrimaryKeyRelatedField(read_only=True)
     attachments = GroupMessageAttachmentSerializer(many=True, read_only=True)
-    # 👇 NUEVO
-    replied_to = GroupMessageReplySerializer(read_only=True)
+
+    replied_to = serializers.SerializerMethodField()
+    sender_image = serializers.SerializerMethodField()
+    user_image = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMessage
         fields = [
-            'id',
-            'group',
-            'sender',
-            'content',
-            'image',
-            'video',
-            'timestamp',
-            'attachments',
-            'replied_to',   # 👈 importante
+            "id",
+            "group",
+            "sender",
+            "content",
+            "image",
+            "video",
+            "timestamp",
+            "replied_to",
+            "attachments",
+            "sender_image",
+            "user_image",
         ]
+
+    def get_replied_to(self, obj):
+        if not obj.replied_to:
+            return None
+        rep = obj.replied_to
+        return {
+            "id": rep.id,
+            "content": rep.content,
+            "sender": {
+                "id": rep.sender.id,
+                "username": rep.sender.username,
+            },
+            "timestamp": rep.timestamp,
+        }
+
+    def _get_sender_image_url(self, obj):
+        user = obj.sender
+        serializer = UserSerializer(user, context=self.context)
+        return serializer.data.get("image")
+
+    def get_sender_image(self, obj):
+        return self._get_sender_image_url(obj)
+
+    def get_user_image(self, obj):
+        return self._get_sender_image_url(obj)

@@ -182,7 +182,7 @@ def users_who_liked_message(request, message_id):
 def user_list(request):
     try:
         users = User.objects.all()
-        serializer = UserSerializer(users, many=True)
+        serializer = UserSerializer(users, many=True, context={'request': request})
         return Response(serializer.data)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -415,8 +415,8 @@ def group_messages(request, group_id):
         return Response({'error': 'You are not a member of this group'}, status=status.HTTP_403_FORBIDDEN)
 
     messages = GroupMessage.objects.filter(group=group).order_by('-timestamp')
-    return Response(GroupMessageSerializer(messages, many=True).data)
-
+    serializer = GroupMessageSerializer(messages, many=True, context={'request': request})
+    return Response(serializer.data)
 
 @api_view(['POST'])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
@@ -459,4 +459,5 @@ def send_group_message(request, group_id):
             is_video=(getattr(f, 'content_type', '') or '').startswith('video/'),
         )
 
-    return Response(GroupMessageSerializer(message).data, status=status.HTTP_201_CREATED)
+    serializer = GroupMessageSerializer(message, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
