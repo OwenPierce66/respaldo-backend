@@ -182,7 +182,7 @@ def users_who_liked_message(request, message_id):
 def user_list(request):
     try:
         users = User.objects.all()
-        serializer = UserSerializer(users, many=True, context={'request': request})
+        serializer = UserSerializer(users, many=True, context={"request": request})
         return Response(serializer.data)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

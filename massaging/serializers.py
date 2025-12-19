@@ -11,11 +11,25 @@ from .models import (
 )
 
 
+# serializers.py
+from rest_framework import serializers
+from django.contrib.auth.models import User
+from django.db.models.fields.files import ImageFieldFile, FieldFile  # 👈 NUEVO IMPORT
+
+from .models import (
+    Message,
+    MessageAttachment,
+    Group,
+    GroupMembership,
+    GroupMessage,
+    GroupMessageAttachment,
+)
+
+
 class UserSerializer(serializers.ModelSerializer):
     """
     Usuario con campo de imagen listo para el chat.
-    Ajusta los nombres de campos 'image', 'profile_image', 'avatar', 'image_profile'
-    según tu modelo real de perfil/usuario.
+    Intenta encontrar cualquier ImageField en User o en algún perfil 1-a-1.
     """
     image = serializers.SerializerMethodField()
     profile_image = serializers.SerializerMethodField()
@@ -25,35 +39,81 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "username", "image", "profile_image", "avatar"]
 
-    def _get_any_image_field(self, obj):
-        # 1) campos directos en User
-        for attr in ["image", "profile_image", "avatar", "image_profile", "foto"]:
-            if hasattr(obj, attr) and getattr(obj, attr):
-                return getattr(obj, attr)
+    def _get_any_image_field(self, obj: User):
+        """
+        Devuelve el FieldFile de la imagen de perfil, buscando:
+        1) Atributos típicos en User (image, profile_image, etc.)
+        2) Cualquier ImageField directo en User
+        3) Cualquier ImageField en relaciones OneToOne (perfil, profile, etc.)
+        """
 
-        # 2) perfil relacionado (User.profile, User.perfil, etc.)
-        profile = getattr(obj, "profile", None) or getattr(obj, "perfil", None)
-        if profile:
-            for attr in ["image", "profile_image", "avatar", "image_profile", "foto"]:
-                if hasattr(profile, attr) and getattr(profile, attr):
-                    return getattr(profile, attr)
+        # 1) Atributos típicos en el propio User
+        candidate_attrs = [
+            "image",
+            "profile_image",
+            "avatar",
+            "image_profile",
+            "foto",
+            "photo",
+            "picture",
+            "imagen_perfil",
+        ]
+        for attr in candidate_attrs:
+            if hasattr(obj, attr):
+                val = getattr(obj, attr)
+                if isinstance(val, (ImageFieldFile, FieldFile)) and getattr(val, "url", None):
+                    return val
 
+        # 2) Buscar cualquier ImageField directo en User
+        for field in obj._meta.fields:
+            try:
+                val = getattr(obj, field.name)
+            except Exception:
+                continue
+
+            if isinstance(val, (ImageFieldFile, FieldFile)) and getattr(val, "url", None):
+                return val
+
+        # 3) Buscar en relaciones OneToOne (perfiles) reversas
+        for rel in obj._meta.related_objects:
+            if not rel.one_to_one:
+                continue
+
+            accessor_name = rel.get_accessor_name()  # p.ej. "profile", "perfilusuario", etc.
+            profile_obj = getattr(obj, accessor_name, None)
+            if not profile_obj:
+                continue
+
+            for field in profile_obj._meta.fields:
+                try:
+                    val = getattr(profile_obj, field.name)
+                except Exception:
+                    continue
+
+                if isinstance(val, (ImageFieldFile, FieldFile)) and getattr(val, "url", None):
+                    return val
+
+        # Si no encontramos nada, devolvemos None
         return None
 
     def _build_url(self, file_field):
         if not file_field:
             return None
         request = self.context.get("request")
-        url = file_field.url
+        url = getattr(file_field, "url", None)
+        if not url:
+          return None
         return request.build_absolute_uri(url) if request else url
 
     def get_image(self, obj):
         return self._build_url(self._get_any_image_field(obj))
 
     def get_profile_image(self, obj):
+        # Para simplificar, reutilizamos el mismo campo
         return self.get_image(obj)
 
     def get_avatar(self, obj):
+        # Igual que image
         return self.get_image(obj)
 
 
