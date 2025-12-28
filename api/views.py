@@ -86,6 +86,7 @@ class TaskFeedLimitOffset(LimitOffsetPagination):
     max_limit = 100
 
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def task_feed(request):
@@ -95,21 +96,41 @@ def task_feed(request):
         ordering = '-created_at'
 
     period = request.query_params.get('period')  # day | week | month | None
+    pch = request.query_params.get('pch')        # consejos | peticiones | historias
+    media = request.query_params.get('media')    # video | image (opcional)
 
     qs = (
         Task.objects
-        # 👇 usa 'like' (NO 'like_set') para el annotate
         .annotate(likes_count=Count('like', distinct=True))
         .select_related('user')
         .prefetch_related(
-            # estos sí usan el atributo reverse real
             'subtasks',
             'subfactores',
             'subfuentes',
-            'shared_tasks',   # tienes related_name='shared_tasks' en SharedTask
-            'like_set',       # aquí sí va like_set porque es el atributo reverse
+            'shared_tasks',
+            'like_set',
         )
     )
+
+    # ✅ filtro por tema
+    if pch:
+        qs = qs.filter(pch=pch)
+
+    # ✅ filtro por media (reels)
+    if media == "video":
+        qs = qs.filter(
+            # video directo en Task
+            (Q(video__isnull=False) & ~Q(video=""))
+            |
+            # video en subtasks
+            (Q(subtasks__video__isnull=False) & ~Q(subtasks__video=""))
+            |
+            # video en subfactores
+            (Q(subfactores__video__isnull=False) & ~Q(subfactores__video=""))
+            |
+            # video en subfuentes
+            (Q(subfuentes__video__isnull=False) & ~Q(subfuentes__video=""))
+        ).distinct()
 
     if period:
         today = now().date()
@@ -120,15 +141,12 @@ def task_feed(request):
         elif period == 'month':
             qs = qs.filter(created_at__date__gte=today - timedelta(days=30))
 
-    # ya puedes ordenar por -likes_count sin tronar
     qs = qs.order_by(ordering, '-id')
 
     paginator = TaskFeedLimitOffset()
     page = paginator.paginate_queryset(qs, request)
     serializer = TaskSerializer(page, many=True, context={'request': request})
     return paginator.get_paginated_response(serializer.data)
-
-
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -766,7 +784,8 @@ class NewPeticionCommentView(APIView):
         # from django.shortcuts import get_object_or_404
         # get_object_or_404(Task, id=task_id)
 
-        qs = NewPeticionCommentPost.objects.filter(post=task_id)
+        qs = (NewPeticionCommentPost.objects.filter(post=task_id).select)
+
 
         # period: day | week | month
         period = request.query_params.get('period', '')

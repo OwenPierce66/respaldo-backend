@@ -8,6 +8,49 @@ from django.db import transaction
 import json
 from urllib.parse import urljoin
 
+from django.conf import settings
+from django.core.files.storage import default_storage
+
+
+def file_to_abs_url(file_or_str, request=None):
+    """
+    Convierte FieldFile o string a URL absoluta (https://tu-dominio/...).
+    Soporta storages custom (file.url) y paths string.
+    """
+    if not file_or_str:
+        return None
+
+    # 1) FieldFile -> .url
+    if hasattr(file_or_str, "url"):
+        url = file_or_str.url
+    else:
+        url = str(file_or_str).strip()
+        if not url:
+            return None
+
+        # Si ya es absoluta
+        if url.startswith(("http://", "https://")):
+            return url
+
+        media_url = (getattr(settings, "MEDIA_URL", "/media/") or "/media/").rstrip("/")
+
+        # Si viene como "imagenfija/xxx.jpg" => intenta resolver via storage
+        if not url.startswith("/") and not url.startswith(media_url + "/"):
+            try:
+                url = default_storage.url(url.lstrip("/"))
+            except Exception:
+                url = f"{media_url}/{url.lstrip('/')}"
+        elif not url.startswith("/"):
+            url = "/" + url
+
+    # 2) Forzar absoluta si hay request y no es http(s)
+    if request and url and not url.startswith(("http://", "https://")):
+        if not url.startswith("/"):
+            url = "/" + url
+        return request.build_absolute_uri(url)
+
+    return url
+
 class CustomUserDetailsSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -218,10 +261,18 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
     children = RecursiveField(many=True)
     is_parent = serializers.ReadOnlyField()
     likes_count = serializers.SerializerMethodField()
-    subtasks = SubTaskSerializer(many=True, read_only=True)
-    subFactores = SubFactoresSerializer(many=True, read_only=True)
-    subFuentes = SubFuentesSerializer(many=True, read_only=True)
+
+    # ✅ usa los serializers de CommentPost
+    subtasks = SubTaskCommentPostSerializer(many=True, read_only=True)
+    subFuentes = SubFuentesCommentPostSerializer(many=True, read_only=True)
+    subFactores = SubFactoresCommentPostSerializer(many=True, read_only=True)
+
     like_set = LikeCommentSerializer(many=True, read_only=True, source="likes")
+
+    # ✅ NUEVO: Reels para aportaciones (comentarios) también
+    primary_video = serializers.SerializerMethodField()
+    primary_media = serializers.SerializerMethodField()
+    media_options = serializers.SerializerMethodField()
 
     class Meta:
         model = NewPeticionCommentPost
@@ -229,6 +280,77 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
 
     def get_likes_count(self, obj):
         return obj.likes.count()
+
+    def _clip(self, kind, obj_id, video_file, title="", parent_comment=None, parent_task=None):
+        request = self.context.get("request")
+        return {
+            "kind": kind,  # "comment_subtask" | "comment_subfuente" | "comment_subfactor"
+            "id": obj_id,
+            "parent_comment": parent_comment,
+            "parent_task": parent_task,
+            "title": title or "",
+            "video": file_to_abs_url(video_file, request=request),
+        }
+
+    def get_media_options(self, obj):
+        opts = []
+        # Nota: aquí NO hay obj.video, sólo videos en sus sub-objetos
+
+        for st in obj.subtasks.all():
+            if getattr(st, "video", None):
+                opts.append(self._clip(
+                    "comment_subtask", st.id, st.video,
+                    title=getattr(st, "title", ""),
+                    parent_comment=obj.id,
+                    parent_task=obj.post_id
+                ))
+
+        for sf in obj.subFuentes.all():
+            if getattr(sf, "video", None):
+                opts.append(self._clip(
+                    "comment_subfuente", sf.id, sf.video,
+                    title=getattr(sf, "title", ""),
+                    parent_comment=obj.id,
+                    parent_task=obj.post_id
+                ))
+
+        for sc in obj.subFactores.all():
+            if getattr(sc, "video", None):
+                opts.append(self._clip(
+                    "comment_subfactor", sc.id, sc.video,
+                    title=getattr(sc, "title", ""),
+                    parent_comment=obj.id,
+                    parent_task=obj.post_id
+                ))
+
+        return opts
+
+    def _pick_primary(self, obj):
+        # Orden auto para comentarios: subtask -> subfuente -> subfactor
+        for st in obj.subtasks.all():
+            if getattr(st, "video", None):
+                return ("comment_subtask", st.id, st.video)
+
+        for sf in obj.subFuentes.all():
+            if getattr(sf, "video", None):
+                return ("comment_subfuente", sf.id, sf.video)
+
+        for sc in obj.subFactores.all():
+            if getattr(sc, "video", None):
+                return ("comment_subfactor", sc.id, sc.video)
+
+        return (None, None, None)
+
+    def get_primary_video(self, obj):
+        kind, _id, v = self._pick_primary(obj)
+        request = self.context.get("request")
+        return file_to_abs_url(v, request=request)
+
+    def get_primary_media(self, obj):
+        kind, _id, v = self._pick_primary(obj)
+        if not v:
+            return None
+        return {"kind": kind, "id": _id}
 
 
 
@@ -240,6 +362,11 @@ class TaskSerializer(serializers.ModelSerializer):
     subfactores = SubFactoresSerializer(many=True, read_only=True)
     user_image = serializers.SerializerMethodField()
     shared_by_list = serializers.SerializerMethodField()
+
+    # ✅ NUEVO
+    primary_video = serializers.SerializerMethodField()
+    primary_media = serializers.SerializerMethodField()
+    media_options = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -267,6 +394,72 @@ class TaskSerializer(serializers.ModelSerializer):
             })
         return out
 
+    # ---------------------------
+    # ✅ REELS: media index
+    # ---------------------------
+    def _clip(self, kind, obj_id, video_file, title="", parent_task=None):
+        request = self.context.get("request")
+        return {
+            "kind": kind,  # "task" | "subtask" | "subfuente" | "subfactor"
+            "id": obj_id,
+            "parent_task": parent_task,
+            "title": title or "",
+            "video": file_to_abs_url(video_file, request=request),
+        }
+
+    def get_media_options(self, obj):
+        opts = []
+
+        # 1) video del task
+        if getattr(obj, "video", None):
+            opts.append(self._clip("task", obj.id, obj.video, title=getattr(obj, "title", ""), parent_task=obj.id))
+
+        # 2) videos de subtasks (aportaciones)
+        for st in obj.subtasks.all():
+            if getattr(st, "video", None):
+                opts.append(self._clip("subtask", st.id, st.video, title=getattr(st, "title", ""), parent_task=obj.id))
+
+        # 3) videos de subfuentes
+        for sf in obj.subfuentes.all():
+            if getattr(sf, "video", None):
+                opts.append(self._clip("subfuente", sf.id, sf.video, title=getattr(sf, "title", ""), parent_task=obj.id))
+
+        # 4) videos de subfactores
+        for sc in obj.subfactores.all():
+            if getattr(sc, "video", None):
+                opts.append(self._clip("subfactor", sc.id, sc.video, title=getattr(sc, "title", ""), parent_task=obj.id))
+
+        return opts
+
+    def _pick_primary(self, obj):
+        # Orden “auto”: Task.video -> SubTask -> SubFuente -> SubFactor
+        if getattr(obj, "video", None):
+            return ("task", obj.id, obj.video)
+
+        for st in obj.subtasks.all():
+            if getattr(st, "video", None):
+                return ("subtask", st.id, st.video)
+
+        for sf in obj.subfuentes.all():
+            if getattr(sf, "video", None):
+                return ("subfuente", sf.id, sf.video)
+
+        for sc in obj.subfactores.all():
+            if getattr(sc, "video", None):
+                return ("subfactor", sc.id, sc.video)
+
+        return (None, None, None)
+
+    def get_primary_video(self, obj):
+        kind, _id, v = self._pick_primary(obj)
+        request = self.context.get("request")
+        return file_to_abs_url(v, request=request)
+
+    def get_primary_media(self, obj):
+        kind, _id, v = self._pick_primary(obj)
+        if not v:
+            return None
+        return {"kind": kind, "id": _id}
 
 
 
