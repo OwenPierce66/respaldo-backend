@@ -308,32 +308,38 @@ def create_shared_task(request):
     if request.method == 'POST':
         data = request.data.copy()
         task_id = data.get('task_id')
-        description = data.get('description', '')  # descripción al compartir
+        description = data.get('description', '')
 
         if not task_id:
             return Response({"error": "Task ID is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            task = Task.objects.get(id=task_id)
-        except Task.DoesNotExist:
-            return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+        task = get_object_or_404(Task, id=task_id)
 
-        shared_by = request.user
-        shared_task = SharedTask.objects.create(
+        SharedTask.objects.create(
             task=task,
-            shared_by=shared_by,
+            shared_by=request.user,
             description=description
         )
-        task.share_count += 1
-        task.save()
 
-        serializer = SharedTaskSerializer(shared_task, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        # si task.share_count existe en tu modelo, mantenlo:
+        task.share_count = (task.share_count or 0) + 1
+        task.save(update_fields=["share_count"])
+
+        # 🔥 devuelve el TASK completo (lo que tu front realmente usa)
+        task = Task.objects.prefetch_related(
+            "shared_tasks", "subtasks", "subfactores", "subfuentes", "like_set"
+        ).select_related("user").get(id=task.id)
+
+        return Response(
+            TaskSerializer(task, context={'request': request}).data,
+            status=status.HTTP_201_CREATED
+        )
 
     elif request.method == 'GET':
         shared_tasks = SharedTask.objects.all()
         serializer = SharedTaskSerializer(shared_tasks, many=True, context={'request': request})
         return Response(serializer.data)
+
 
 
 

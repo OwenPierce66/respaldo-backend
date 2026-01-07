@@ -382,18 +382,49 @@ class TaskSerializer(serializers.ModelSerializer):
         return None
 
     def get_shared_by_list(self, obj):
-        out = []
-        for st in obj.shared_tasks.all():
-            sb = st.shared_by
-            out.append({
-                "id": sb.id if sb else None,
-                "username": getattr(sb, "username", "unknown") if sb else "unknown",
-                "email": getattr(sb, "email", None) if sb else None,
-                "is_staff": getattr(sb, "is_staff", False) if sb else False,
-                "description": st.description or "",
-            })
-        return out
+        request = self.context.get("request")
 
+        # cache por serializer-instance (evita N consultas repetidas)
+        if not hasattr(self, "_share_img_cache"):
+            self._share_img_cache = {}
+
+        out = []
+
+        # Opcional: orden para que "último que compartió" sea el último
+        for st in obj.shared_tasks.all().order_by("id"):
+            sb = st.shared_by
+            if not sb:
+                out.append({
+                    "id": None,
+                    "username": "unknown",
+                    "description": st.description or "",
+                    "user_image": None,
+                })
+                continue
+
+            # cache de imagen por user id
+            if sb.id not in self._share_img_cache:
+                imagen_fija = ImagenFija.objects.filter(user=sb).order_by("-id").first()
+                if imagen_fija and imagen_fija.image:
+                    url = imagen_fija.image.url  # normalmente "/media/..."
+                    # si quieres absoluta (opcional):
+                    if request:
+                        url = request.build_absolute_uri(url)
+                    self._share_img_cache[sb.id] = url
+                else:
+                    self._share_img_cache[sb.id] = None
+
+            out.append({
+                "id": sb.id,
+                "username": getattr(sb, "username", "unknown"),
+                # ojo: exponer email/is_staff en feed no suele ser buena idea; si lo ocupas, déjalo
+                "email": getattr(sb, "email", None),
+                "is_staff": getattr(sb, "is_staff", False),
+                "description": st.description or "",
+                "user_image": self._share_img_cache[sb.id],  # ✅ CLAVE
+            })
+
+        return out
     # ---------------------------
     # ✅ REELS: media index
     # ---------------------------
