@@ -77,10 +77,15 @@ class SimpleUserSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     user_image = serializers.SerializerMethodField()
     has_liked = serializers.SerializerMethodField()
+    is_verified = serializers.SerializerMethodField()
+    is_recommended = serializers.SerializerMethodField()
+    subscriptionActive = serializers.SerializerMethodField()
+    subscription_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'categoriesp', 'likes_count', 'user_image', 'has_liked')
+        fields = ('id', 'username', 'categoriesp','likes_count', 'user_image', 'has_liked','is_verified', 'is_recommended', 'subscriptionActive', 'subscription_amount',)
+
 
     def get_likes_count(self, obj):
         return LikeP.objects.filter(profile=obj).count()
@@ -96,6 +101,19 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return LikeP.objects.filter(user=request.user, profile=obj).exists()
         return False  
+    
+    
+    def get_is_verified(self, obj):
+        return getattr(obj.profile, 'is_verified', False)
+
+    def get_is_recommended(self, obj):
+        return getattr(obj.profile, 'is_recommended', False)
+
+    def get_subscriptionActive(self, obj):
+        return getattr(obj.profile, 'subscriptionActive', False)
+
+    def get_subscription_amount(self, obj):
+        return getattr(obj.profile, 'subscription_amount', 0)
 
         
 

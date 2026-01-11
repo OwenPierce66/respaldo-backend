@@ -1,5 +1,6 @@
 from django.urls import path
 from rest_framework.authtoken.views import obtain_auth_token
+
 from .views import *
 from django.conf import settings
 from django.conf.urls.static import static
@@ -61,7 +62,10 @@ urlpatterns = [
     path('usuario/<int:user_id>/portadas/', obtener_portadas_usuario, name='obtener_portadas_usuario'),
     path('usuario/<int:user_id>/imagen-fija/', obtener_imagen_fija_usuario, name='obtener_imagen_fija_usuario'),
     path('favoritos/listar/<int:user_id>/', listar_favoritos_usuario, name='listar_favoritos_usuario'),
-
+    path("admin/users/<int:user_id>/verify/", admin_verify_user),
+    path("admin/users/<int:user_id>/recommend/", admin_recommend_user, name="admin-recommend-user"),
+    path("admin/tasks/<int:task_id>/app-like/", admin_app_like_task, name="admin-app-like-task"),
+    path("admin/profiles/<int:profile_id>/app-like/", admin_app_like_profile, name="admin-app-like-profile"),
 
     path('agreement/', AgreementView.as_view(), name="agreement"),
     path('exchange/', CurrencyView.as_view(), name="currency"),

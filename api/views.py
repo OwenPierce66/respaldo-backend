@@ -79,8 +79,136 @@ from .models import ForumPostt
 from rest_framework.pagination import CursorPagination
 from rest_framework.pagination import LimitOffsetPagination
 from django.utils import timezone
+from .serializers import file_to_abs_url
+
 # Vista para listar y crear portadas
 # views.py
+
+
+def _get_app_user():
+    app_id = getattr(settings, "APP_USER_ID", 1)
+    return get_object_or_404(User, id=app_id)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admin_app_like_task(request, task_id):
+    # ✅ Solo superuser
+    if not request.user.is_superuser:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    task = get_object_or_404(Task, id=task_id)
+    app_user = _get_app_user()
+
+    liked = _to_bool(request.data.get("liked", True), default=True)
+
+    qs = Like.objects.filter(user=app_user, task=task)
+
+    if liked:
+        # crea si no existe; si hay duplicados, deja solo 1
+        if not qs.exists():
+            Like.objects.create(user=app_user, task=task)
+        else:
+            keep = qs.first()
+            qs.exclude(id=keep.id).delete()
+    else:
+        qs.delete()
+
+    likes_count = Like.objects.filter(task=task).count()
+    return Response(
+        {
+            "task_id": task.id,
+            "app_user_id": app_user.id,
+            "liked": liked,
+            "likes_count": likes_count,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admin_app_like_profile(request, profile_id):
+    # ✅ Solo superuser
+    if not request.user.is_superuser:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    profile_user = get_object_or_404(User, id=profile_id)
+    app_user = _get_app_user()
+
+    liked = _to_bool(request.data.get("liked", True), default=True)
+
+    qs = LikeP.objects.filter(user=app_user, profile=profile_user)
+
+    if liked:
+        qs.get_or_create(user=app_user, profile=profile_user)
+    else:
+        qs.delete()
+
+    likes_count = LikeP.objects.filter(profile=profile_user).count()
+    return Response(
+        {
+            "profile_id": profile_user.id,
+            "app_user_id": app_user.id,
+            "liked": liked,
+            "likes_count": likes_count,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admin_verify_user(request, user_id):
+    # ✅ Solo superuser (puedes permitir staff si quieres)
+    if not request.user.is_superuser:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    u = get_object_or_404(User, id=user_id)
+    profile, _ = Profile.objects.get_or_create(user=u)
+
+    is_verified = request.data.get("is_verified", True)
+    profile.is_verified = bool(is_verified)
+    profile.save(update_fields=["is_verified"])
+
+    return Response(
+        {"user_id": u.id, "is_verified": profile.is_verified},
+        status=status.HTTP_200_OK
+    )
+
+def _to_bool(v, default=False):
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return v == 1
+    s = str(v).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "f", "no", "n", "off"):
+        return False
+    return default
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admin_recommend_user(request, user_id):
+    # ✅ Solo superuser (igual que verify)
+    if not request.user.is_superuser:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    u = get_object_or_404(User, id=user_id)
+    profile, _ = Profile.objects.get_or_create(user=u)
+
+    is_recommended = request.data.get("is_recommended", True)
+    profile.is_recommended = _to_bool(is_recommended, default=True)
+    profile.save(update_fields=["is_recommended"])
+
+    return Response(
+        {"user_id": u.id, "is_recommended": profile.is_recommended},
+        status=status.HTTP_200_OK
+    )
+
+
 class TaskFeedLimitOffset(LimitOffsetPagination):
     default_limit = 3   # lo que usas en el front
     max_limit = 100
@@ -151,6 +279,62 @@ def task_feed(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def users_who_shared_task(request, task_id):
+    # asegura que existe la tarea
+    get_object_or_404(Task.objects.only("id"), id=task_id)
+
+    # última imagen fija del usuario (igual que likes)
+    latest_img = (
+        ImagenFija.objects
+        .filter(user=OuterRef("pk"))
+        .order_by("-id")
+        .values("image")[:1]
+    )
+
+    # existe share del usuario en esta tarea
+    shared_exists = SharedTask.objects.filter(task_id=task_id, shared_by_id=OuterRef("pk"))
+
+    # usuarios únicos que compartieron
+    users_qs = (
+        User.objects
+        .annotate(
+            user_image=Subquery(latest_img),
+            shared=Exists(shared_exists),
+        )
+        .filter(shared=True)
+        .select_related("profile")  # evita golpes extra al profile
+    )
+
+    out = []
+    for u in users_qs:
+        try:
+            p = u.profile
+        except Exception:
+            p = None
+
+        out.append({
+            "id": u.id,
+            "username": u.username,
+
+            # opcional, pero útil para que el UI quede igual al de likes
+            "likes_count": LikeP.objects.filter(profile=u).count(),
+
+            # ✅ absoluto como ya haces en likes
+            "user_image": file_to_abs_url(getattr(u, "user_image", None), request),
+
+            # ✅ para tu jerarquía
+            "is_app": (u.username == "app-bot") or (u.id == getattr(settings, "APP_USER_ID", 1)),
+
+            # ✅ MISMA ESTRUCTURA que tus endpoints de likes (profile anidado)
+            "profile": {
+                "subscriptionActive": bool(getattr(p, "subscriptionActive", False)) if p else False,
+                "subscription_amount": str(getattr(p, "subscription_amount", 0) or 0) if p else "0",
+                "is_verified": bool(getattr(p, "is_verified", False)) if p else False,
+                "is_recommended": bool(getattr(p, "is_recommended", False)) if p else False,
+            }
+        })
+
+    return Response(out, status=status.HTTP_200_OK)
+
     try:
         task = Task.objects.get(id=task_id)
         shared_tasks = SharedTask.objects.filter(task=task).select_related('shared_by')
@@ -460,10 +644,12 @@ def get_user_details(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def verify_admin(request):
-    if not request.user.is_staff:
-        return Response({"detail": "No tienes permiso para realizar esta acción."}, status=status.HTTP_403_FORBIDDEN)
-    
-    return Response({"is_admin": True}, status=status.HTTP_200_OK)
+    return Response({
+        "is_staff": request.user.is_staff,
+        "is_superuser": request.user.is_superuser,
+        "is_admin": bool(request.user.is_staff or request.user.is_superuser),
+    }, status=status.HTTP_200_OK)
+
 
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
@@ -511,11 +697,48 @@ def new_category_detail_update_delete(request, pk):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_likes(request, profile_id):
-    profile = get_object_or_404(User, pk=profile_id)
-    likes = LikeP.objects.filter(profile=profile)
-    liked_users = [like.user for like in likes]
-    serializer = SimpleUserSerializer(liked_users, many=True)
-    return Response(serializer.data)
+    get_object_or_404(User.objects.only("id"), pk=profile_id)
+
+    latest_img = (
+        ImagenFija.objects
+        .filter(user=OuterRef("pk"))
+        .order_by("-id")
+        .values("image")[:1]
+    )
+
+    likes_exists = LikeP.objects.filter(profile_id=profile_id, user_id=OuterRef("pk"))
+
+    users_qs = (
+        User.objects
+        .annotate(
+            user_image=Subquery(latest_img),
+            liked=Exists(likes_exists),
+        )
+        .filter(liked=True)
+    )
+
+    out = []
+    for u in users_qs:
+        try:
+            p = u.profile
+        except Exception:
+            p = None
+
+        out.append({
+            "id": u.id,
+            "username": u.username,
+            "likes_count": LikeP.objects.filter(profile=u).count(),
+            "user_image": file_to_abs_url(getattr(u, "user_image", None), request),
+            "is_app": (u.username == "app-bot"),
+            "profile": {
+                "subscriptionActive": bool(getattr(p, "subscriptionActive", False)) if p else False,
+                "subscription_amount": str(getattr(p, "subscription_amount", 0) or 0) if p else "0",
+                "is_verified": bool(getattr(p, "is_verified", False)) if p else False,
+                "is_recommended": bool(getattr(p, "is_recommended", False)) if p else False,
+            }
+        })
+
+    return Response(out, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -624,45 +847,12 @@ def _imagenfija_reverse_name():
     # por si lo necesitas en otro lado
     return ImagenFija._meta.get_field('user').remote_field.get_accessor_name()
 
-# ---------- QUIENES DIERON LIKE ----------
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def users_who_liked_task(request, task_id):
-    try:
-        Task.objects.only("id").get(id=task_id)
-    except Task.DoesNotExist:
-        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    latest_img = (
-        ImagenFija.objects
-        .filter(user=OuterRef("pk"))
-        .order_by("-id")        # o "-created_at" si existe
-        .values("image")[:1]
-    )
-
-    likes_exists = Like.objects.filter(task_id=task_id, user_id=OuterRef("pk"))
-
-    users_qs = (
-        User.objects
-        .annotate(
-            latest_imagenfija_image=Subquery(latest_img),
-            liked=Exists(likes_exists),
-        )
-        .filter(liked=True)
-        .only("id", "username", "first_name", "last_name")
-    )
-
-    ser = UserSerializer(users_qs, many=True, context={"request": request})
-    return Response(ser.data, status=status.HTTP_200_OK)
-
-# ---------- QUIENES COMPARTIERON ----------
-@api_view(["GET"])
-@permission_classes([AllowAny])  # o IsAuthenticated
-def users_who_shared_task(request, task_id):
-    try:
-        Task.objects.only("id").get(id=task_id)
-    except Task.DoesNotExist:
-        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+    get_object_or_404(Task.objects.only("id"), id=task_id)
 
     latest_img = (
         ImagenFija.objects
@@ -671,22 +861,40 @@ def users_who_shared_task(request, task_id):
         .values("image")[:1]
     )
 
-    # Ajusta el campo del usuario en SharedTask si en tu modelo se llama distinto
-    shares_exists = SharedTask.objects.filter(task_id=task_id, shared_by_id=OuterRef("pk"))
+    likes_exists = Like.objects.filter(task_id=task_id, user_id=OuterRef("pk"))
 
     users_qs = (
         User.objects
         .annotate(
-            latest_imagenfija_image=Subquery(latest_img),
-            shared=Exists(shares_exists),
+            user_image=Subquery(latest_img),
+            liked=Exists(likes_exists),
         )
-        .filter(shared=True)
-        .only("id", "username", "first_name", "last_name")
+        .filter(liked=True)
     )
 
-    ser = UserSerializer(users_qs, many=True, context={"request": request})
-    return Response(ser.data, status=status.HTTP_200_OK)
+    out = []
+    for u in users_qs:
+        # profile puede no existir; NO lo dejes tumbar el endpoint
+        try:
+            p = u.profile
+        except Exception:
+            p = None
 
+        out.append({
+            "id": u.id,
+            "username": u.username,
+            "likes_count": LikeP.objects.filter(profile=u).count(),  # ✅ estable
+            "user_image": file_to_abs_url(getattr(u, "user_image", None), request),  # ✅ absoluto
+            "is_app": (u.username == "app-bot"),
+            "profile": {
+                "subscriptionActive": bool(getattr(p, "subscriptionActive", False)) if p else False,
+                "subscription_amount": str(getattr(p, "subscription_amount", 0) or 0) if p else "0",
+                "is_verified": bool(getattr(p, "is_verified", False)) if p else False,
+                "is_recommended": bool(getattr(p, "is_recommended", False)) if p else False,
+            }
+        })
+
+    return Response(out, status=status.HTTP_200_OK)
     
 @api_view(['GET'])
 @permission_classes([AllowAny])  
@@ -1354,17 +1562,22 @@ def ResetPasswordView(request):
 
 
 @api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def GetUserView(request):
-    if request.method == "GET":
-        user = UserSerializer(request.user)
-        subscriptionStatus = get_subscription(request.user)
-        data = {
-            'message': 'get request recieved from getuserview',
-            'user': user.data,
-            'subscriptionStatus': subscriptionStatus
-        }
+    user_ser = UserSerializer(request.user)
+    subscriptionStatus = get_subscription(request.user)
 
-        return Response(data) 
+    data = {
+        "message": "get request recieved from getuserview",
+        "user": {
+            **user_ser.data,
+            "is_staff": request.user.is_staff,
+            "is_superuser": request.user.is_superuser,
+            "is_admin": bool(request.user.is_staff or request.user.is_superuser),
+        },
+        "subscriptionStatus": subscriptionStatus,
+    }
+    return Response(data)
 
 @api_view(["PUT"])
 def EditUserView(request):

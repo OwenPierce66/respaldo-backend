@@ -366,7 +366,11 @@ class Profile(models.Model):
     group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True)
     calendar_event_categories = models.ManyToManyField(CalendarEventCategory, blank=True)
     image = models.URLField(blank=True, null=True)
-   
+    subscriptionActive = models.BooleanField(default=False)
+    freeAccount = models.BooleanField(default=False)
+    subscription_amount = models.DecimalField(max_digits=6, decimal_places=2, default=0)  # nuevo
+    is_verified = models.BooleanField(default=False)                                      # nuevo
+    is_recommended = models.BooleanField(default=False)
     
     def get_status(self, obj):
         return obj.get_status_display()
